@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "entangled-state-attention"
+version = "2.0.0"
+description = "Entangled State Attention v2: Thunder, Flare, Pulse backends with Compass c-selection."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "Zameer Hussain"},
+  {name = "Akhtar Hussain"}
+]
+keywords = [
+  "entangled state attention",
+  "ESA",
+  "causal language modeling",
+  "associative scan",
+  "prefix scan",
+  "PyTorch",
+  "Triton"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+  "torch>=2.1"
+]
+
+[project.optional-dependencies]
+triton = ["triton>=2.1"]
+dev = ["pytest>=7", "pandas>=2"]
+
+[project.urls]
+Homepage = "https://github.com/maxzameer/Entangled-State-Attention_v2"
+Repository = "https://github.com/maxzameer/Entangled-State-Attention_v2"
