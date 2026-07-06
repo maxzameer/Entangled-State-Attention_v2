@@ -40,6 +40,6 @@ class ESAConfig:
     precision: Precision = "fp16"
     gate_min: float = 0.80
     gate_max: float = 0.995
-    eps: float = 1e-6
+    eps: float = 1e-5
     strict_precision: bool = False
     strict_backend: bool = False
