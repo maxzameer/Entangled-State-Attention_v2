@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,10 +8,11 @@ version = "2.0.0"
 description = "Entangled State Attention v2: Thunder, Flare, Pulse backends with Compass c-selection."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
-  {name = "Zameer Hussain"},
-  {name = "Akhtar Hussain"}
+  { name = "Zameer Hussain" },
+  { name = "Akhtar Hussain" }
 ]
 keywords = [
   "entangled state attention",
@@ -25,6 +26,7 @@ keywords = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -38,8 +40,19 @@ dependencies = [
 
 [project.optional-dependencies]
 triton = ["triton>=2.1"]
-dev = ["pytest>=7", "pandas>=2"]
+dev = [
+  "pytest>=7",
+  "pandas>=2",
+  "build",
+  "twine"
+]
 
 [project.urls]
 Homepage = "https://github.com/maxzameer/Entangled-State-Attention_v2"
 Repository = "https://github.com/maxzameer/Entangled-State-Attention_v2"
+Issues = "https://github.com/maxzameer/Entangled-State-Attention_v2/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["esa*"]
+exclude = ["tests*", "examples*"]
