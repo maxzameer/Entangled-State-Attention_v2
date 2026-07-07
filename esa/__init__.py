@@ -7,6 +7,16 @@ from .config import ESAConfig
 from .layer import ESA
 from .compass import compass, CompassResult
 from .backends import ThunderESA, FlareESA, PulseESA
+from .benchmark import (
+    ESABenchmarkConfig,
+    DEFAULT_BENCHMARK_CONFIG,
+    FAST_BENCHMARK_CONFIG,
+    PAPER_BENCHMARK_CONFIG,
+    BENCHMARK_DEFAULTS,
+    FAST_BENCHMARK_DEFAULTS,
+    PAPER_BENCHMARK_DEFAULTS,
+)
+from .boost import thunderBoost
 
 __version__ = "2.0.0"
 
@@ -18,4 +28,12 @@ __all__ = [
     "ThunderESA",
     "FlareESA",
     "PulseESA",
+    "thunderBoost",
+    "ESABenchmarkConfig",
+    "DEFAULT_BENCHMARK_CONFIG",
+    "FAST_BENCHMARK_CONFIG",
+    "PAPER_BENCHMARK_CONFIG",
+    "BENCHMARK_DEFAULTS",
+    "FAST_BENCHMARK_DEFAULTS",
+    "PAPER_BENCHMARK_DEFAULTS",
 ]
