@@ -11,95 +11,194 @@ from .constants import SUPPORTED_BACKENDS
 from .backends import ThunderESA, FlareESA, PulseESA
 
 
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+
+
 class ESA(nn.Module):
-    """Entangled State Attention v2 wrapper layer.
-
-    Default:
-        ``ESA(n_embd=128)`` -> backend="thunder", c=16, precision="fp16".
-
-    Backend names:
-        - thunder: optimized chunked ESA backend. Supports ``c``.
-        - flare: experimental Triton ESA backend. Does not expose ``c``.
-        - pulse: base/reference ESA backend. Does not expose ``c``.
-    """
-
     def __init__(
         self,
-        n_embd: int,
-        n_head: int = 4,
-        dropout: float = 0.0,
+
+        # Clean public names
+        embd: int | None = None,
+        head: int = 4,
+        batch: int | None = None,
+        block: int | None = None,
+
+        # Backend
         backend: str = "thunder",
-        c: int | None = None,
         precision: str = "fp16",
+
+        # Old names kept for backward compatibility
+        n_embd: int | None = None,
+        n_head: int | None = None,
+        batch_size: int | None = None,
+        block_size: int | None = None,
+
+        # Internal ESA algorithm defaults
+        compass: int = 16,
         gate_min: float = 0.80,
         gate_max: float = 0.995,
         eps: float = 1e-5,
-        strict_precision: bool = False,
-        strict_backend: bool = False,
+
+        # Runtime
+        device: str | torch.device | None = "auto",
+        auto_compile: bool = False,
+        compile_mode: str = "reduce-overhead",
     ):
         super().__init__()
-        backend = backend.lower()
-        if backend not in SUPPORTED_BACKENDS:
+
+        # ----------------------------------------------------
+        # Resolve new names and old names
+        # ----------------------------------------------------
+        if embd is None:
+            embd = n_embd
+
+        if n_head is not None:
+            head = n_head
+
+        if batch is None:
+            batch = batch_size
+
+        if block is None:
+            block = block_size
+
+        if embd is None:
             raise ValueError(
-                f"Unknown backend={backend!r}. Expected one of {sorted(SUPPORTED_BACKENDS)}."
+                "ESA requires embd. Example: ESA(embd=128, head=4)"
             )
 
-        if backend == "thunder":
-            if c is None:
-                c = 16
-            self.backend_layer = ThunderESA(
-                n_embd=n_embd,
-                n_head=n_head,
-                dropout=dropout,
-                c=c,
-                precision=precision,
-                gate_min=gate_min,
-                gate_max=gate_max,
-                eps=eps,
-                strict_precision=strict_precision,
-            )
-        else:
-            if c is not None:
-                raise ValueError(
-                    'The chunked scan parameter c is only supported by backend="thunder". '
-                    'backend="flare" and backend="pulse" do not expose c.'
-                )
-
-            cls = FlareESA if backend == "flare" else PulseESA
-            self.backend_layer = cls(
-                n_embd=n_embd,
-                n_head=n_head,
-                dropout=dropout,
-                precision=precision,
-                gate_min=gate_min,
-                gate_max=gate_max,
-                eps=eps,
-                strict_precision=strict_precision,
+        if embd % head != 0:
+            raise ValueError(
+                f"embd must be divisible by head, got embd={embd}, head={head}"
             )
 
-        self.n_embd = n_embd
-        self.n_head = n_head
-        self.dropout = dropout
+        # Clean public attributes
+        self.embd = embd
+        self.head = head
+        self.batch = batch
+        self.block = block
+
+        # Backward-compatible attributes
+        self.n_embd = embd
+        self.n_head = head
+        self.batch_size = batch
+        self.block_size = block
+
         self.backend = backend
-        self.c = c if backend == "thunder" else None
         self.precision = precision
-        self.strict_backend = strict_backend
 
-    @classmethod
-    def from_config(cls, config: ESAConfig) -> "ESA":
-        return cls(
-            n_embd=config.n_embd,
-            n_head=config.n_head,
-            dropout=config.dropout,
-            backend=config.backend,
-            c=config.c,
-            precision=config.precision,
-            gate_min=config.gate_min,
-            gate_max=config.gate_max,
-            eps=config.eps,
-            strict_precision=config.strict_precision,
-            strict_backend=config.strict_backend,
-        )
+        # Internal algorithm constants
+        self.compass = compass
+        self.gate_min = gate_min
+        self.gate_max = gate_max
+        self.eps = eps
+
+        # ----------------------------------------------------
+        # Build backend
+        # ----------------------------------------------------
+        if backend == "thunder":
+            from .backends.thunder import ThunderESA
+
+            self.layer = ThunderESA(
+                embd=embd,
+                head=head,
+                compass=compass,
+                precision=precision,
+                gate_min=gate_min,
+                gate_max=gate_max,
+                eps=eps,
+            )
+
+        elif backend == "flare":
+            from .backends.flare import FlareESA
+
+            self.layer = FlareESA(
+                n_embd=embd,
+                n_head=head,
+                precision=precision,
+                gate_min=gate_min,
+                gate_max=gate_max,
+                eps=eps,
+            )
+
+        elif backend == "pulse":
+            from .backends.pulse import PulseESA
+
+            self.layer = PulseESA(
+                n_embd=embd,
+                n_head=head,
+                precision=precision,
+                gate_min=gate_min,
+                gate_max=gate_max,
+                eps=eps,
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown ESA backend: {backend}. "
+                f"Expected 'thunder', 'flare', or 'pulse'."
+            )
+
+        # ----------------------------------------------------
+        # Auto device
+        # ----------------------------------------------------
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if device is not None:
+            self.to(device)
+
+        # ----------------------------------------------------
+        # Optional compile
+        # ----------------------------------------------------
+        self.compiled = False
+
+        if auto_compile:
+            self.compile(mode=compile_mode)
+
+    def compile(self, mode: str = "reduce-overhead"):
+        try:
+            self.layer = torch.compile(
+                self.layer,
+                mode=mode,
+                fullgraph=False,
+            )
+            self.compiled = True
+        except Exception:
+            self.compiled = False
+
+        return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.backend_layer(x)
+        # Auto move input to same device as ESA layer
+        param_device = next(self.parameters()).device
+
+        if x.device != param_device:
+            x = x.to(param_device)
+
+        if x.dim() != 3:
+            raise ValueError(
+                f"ESA expects input shape [batch, block, embd], got {tuple(x.shape)}"
+            )
+
+        B, T, C = x.shape
+
+        if C != self.embd:
+            raise ValueError(
+                f"Last dimension must match embd={self.embd}, got {C}"
+            )
+
+        if self.batch is not None and B != self.batch:
+            raise ValueError(
+                f"Expected batch={self.batch}, got batch={B}"
+            )
+
+        if self.block is not None and T > self.block:
+            raise ValueError(
+                f"Input block length {T} exceeds configured block={self.block}"
+            )
+
+        return self.layer(x)
