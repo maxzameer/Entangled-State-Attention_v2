@@ -18,6 +18,7 @@ class ESA(nn.Module):
         flare      -> default backend, no compass
         thunder    -> compass=16
         pulse      -> no compass
+        lightning  -> compass=4
     """
 
     def __init__(
@@ -72,16 +73,19 @@ class ESA(nn.Module):
 
         if self.backend == "thunder":
             self.compass = 16 if compass is None else int(compass)
+        elif self.backend == "lightning":
+            self.compass = 4 if compass is None else int(compass)
         elif self.backend in {"flare", "pulse"}:
             if compass is not None:
                 raise ValueError(
-                    "compass is only supported by backend='thunder'."
+                    "compass is only supported by backend='thunder' "
+                    "or backend='lightning'."
                 )
             self.compass = None
         else:
             raise ValueError(
                 f"Unknown ESA backend: {backend!r}. "
-                "Supported backends: 'flare', 'thunder', 'pulse'."
+                "Supported backends: 'flare', 'thunder', 'pulse', 'lightning'."
             )
 
         if self.compass is not None and self.compass <= 0:
@@ -117,6 +121,15 @@ class ESA(nn.Module):
             self.layer = PulseESA(
                 n_embd=self.embd,
                 n_head=self.head,
+                **common,
+            )
+
+        else:  # lightning
+            from .backends.lightning import LightningESA
+            self.layer = LightningESA(
+                embd=self.embd,
+                head=self.head,
+                compass=self.compass,
                 **common,
             )
 

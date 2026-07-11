@@ -98,16 +98,3 @@ def test_old_dimension_names_are_not_public_api():
             n_embd=32,
             n_head=4,
         )
-
-
-def test_lightning_is_not_public_backend():
-    with pytest.raises(
-        ValueError,
-        match="Supported backends",
-    ):
-        ESA(
-            embd=32,
-            head=4,
-            backend="lightning",
-            device=None,
-        )

@@ -13,6 +13,7 @@ from .backends import (
     FlareESA,
     ThunderESA,
     PulseESA,
+    LightningESA,
 )
 from .benchmark import (
     ESABenchmarkConfig,
@@ -41,6 +42,7 @@ __all__ = [
     "FlareESA",
     "ThunderESA",
     "PulseESA",
+    "LightningESA",
     "thunderBoost",
     "ESABenchmarkConfig",
     "DEFAULT_BENCHMARK_CONFIG",

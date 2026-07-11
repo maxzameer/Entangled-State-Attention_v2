@@ -58,6 +58,7 @@ def _backend_name(module: torch.nn.Module) -> str:
         "flare",
         "thunder",
         "pulse",
+        "lightning",
     ):
         if candidate in name:
             return candidate
@@ -214,6 +215,21 @@ def _backend_scan(
     if name == "pulse":
         from .backends.pulse import pulse_scan
         return pulse_scan(A, B_write)
+
+    if name == "lightning":
+        from .backends.lightning import lightning_scan
+
+        return lightning_scan(
+            A,
+            B_write,
+            compass=int(
+                getattr(
+                    backend,
+                    "compass",
+                    4,
+                )
+            ),
+        )
 
     raise ValueError(
         f"Unsupported ESA backend for generation: {name!r}"

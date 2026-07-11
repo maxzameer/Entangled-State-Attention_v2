@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Backend = Literal["flare", "thunder", "pulse"]
+Backend = Literal["flare", "thunder", "pulse", "lightning"]
 Precision = Literal["fp8", "fp16", "bf16", "fp32", "fp64"]
 
 

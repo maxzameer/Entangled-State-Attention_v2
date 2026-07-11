@@ -4,12 +4,15 @@
 from .flare import FlareESA, flare_scan
 from .thunder import ThunderESA, thunder_scan
 from .pulse import PulseESA, pulse_scan
+from .lightning import LightningESA, lightning_scan
 
 __all__ = [
     "FlareESA",
     "ThunderESA",
     "PulseESA",
+    "LightningESA",
     "flare_scan",
     "thunder_scan",
     "pulse_scan",
+    "lightning_scan",
 ]

@@ -13,6 +13,17 @@ from esa.backends.lightning import lightning_scan
 from esa.backends.pulse import pulse_scan
 
 
+def test_lightning_compass_default():
+    layer = ESA(
+        embd=32,
+        head=4,
+        backend="lightning",
+        device=None,
+    )
+
+    assert layer.compass == 4
+    assert layer.layer.compass == 4
+
 
 def test_lightning_scan_matches_reference():
     torch.manual_seed(1)
