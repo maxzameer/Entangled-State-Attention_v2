@@ -497,8 +497,8 @@ class ESAModel(nn.Module):
         seed: int | None = None,
         compile: bool = True,
         compile_mode: str = "reduce-overhead",
-        progress_every: int | None = None,
-        return_result: bool = False,
+        progress_interval: int | None = None,
+        stats: bool = False,
     ) -> torch.Tensor | str | GenerationResult:
         if max_new_tokens <= 0:
             raise ValueError(
@@ -661,9 +661,9 @@ class ESAModel(nn.Module):
                 break
 
             if (
-                progress_every
+                progress_interval
                 and (step + 1)
-                % int(progress_every)
+                % int(progress_interval)
                 == 0
             ):
                 sync()
@@ -711,7 +711,7 @@ class ESAModel(nn.Module):
             * states.element_size()
         )
 
-        stats = GenerationStats(
+        generation_stats = GenerationStats(
             prompt_tokens=prompt_tokens,
             prefill_tokens=int(
                 prefill_len
@@ -748,7 +748,7 @@ class ESAModel(nn.Module):
         result = GenerationResult(
             sequences=sequences,
             generated_ids=generated_ids,
-            stats=stats,
+            stats=generation_stats,
         )
 
         if tokenizer is not None:
@@ -774,7 +774,7 @@ class ESAModel(nn.Module):
             was_training
         )
 
-        if return_result:
+        if stats:
             return result
 
         if result.text is not None:
