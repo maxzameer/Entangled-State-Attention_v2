@@ -5,8 +5,15 @@ from __future__ import annotations
 
 from .config import ESAConfig
 from .layer import ESA
+from .model import ESAModel, ESAModelConfig
+from .trainer import Trainer, TrainerState
+from .generation import GenerationResult, GenerationStats
 from .compass import compass, CompassResult
-from .backends import ThunderESA, FlareESA, PulseESA
+from .backends import (
+    FlareESA,
+    ThunderESA,
+    PulseESA,
+)
 from .benchmark import (
     ESABenchmarkConfig,
     DEFAULT_BENCHMARK_CONFIG,
@@ -18,15 +25,21 @@ from .benchmark import (
 )
 from .boost import thunderBoost
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "ESA",
     "ESAConfig",
+    "ESAModel",
+    "ESAModelConfig",
+    "Trainer",
+    "TrainerState",
+    "GenerationResult",
+    "GenerationStats",
     "compass",
     "CompassResult",
-    "ThunderESA",
     "FlareESA",
+    "ThunderESA",
     "PulseESA",
     "thunderBoost",
     "ESABenchmarkConfig",

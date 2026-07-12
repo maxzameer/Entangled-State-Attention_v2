@@ -1,51 +1,73 @@
-# Entangled State Attention v2
+# Entangled State Attention v2.1
 
-Entangled State Attention (ESA) is a state-based causal sequence modeling layer for causal sequence modeling.
+**Entangled State Attention (ESA)** is a state-based causal sequence modeling architecture for efficient training and recurrent text generation.
 
-Instead of building explicit token-to-token attention score matrices, ESA updates a causal state through a recurrence:
+Instead of constructing an explicit token-to-token attention score matrix, ESA updates a causal state through the recurrence
 
-```text
-E_t = A_t * E_{t-1} + B_t
-```
+$$
+E_t = A_t \odot E_{t-1} + B_t
+$$
 
-ESA v2 provides:
+ESA v2.1 provides both a reusable sequence layer and a complete causal language model.
 
-```text
-ESA              = main PyTorch layer
-thunder          = optimized default backend
-flare            = experimental Triton backend
-pulse            = base/reference backend
-compass()        = utility for selecting Thunder scan settings
-thunderBoost()   = optional compile/warmup utility for layers and models
-```
+## ESA v2.1 at a glance
 
-## Install
+- `ESA` — reusable PyTorch sequence layer
+- `Flare` — default high-performance training backend
+- `Thunder` — optimized alternative backend
+- `Pulse` — reference backend for correctness and comparison
+- `ESAModel` — complete causal language model built from ESA layers
+- `ESA-Lightning` — recurrent generation engine used by `model.generate()`
+- `Trainer` — checkpointing and exact training resume
+- `compass()` — utility for selecting practical Thunder scan settings
+- `thunderBoost()` — optional compile and warmup utility
 
-Local development install:
+> **Important:** ESA-Lightning is a generation engine, not a selectable training backend.  
+> Public training backends are `flare`, `thunder`, and `pulse`.
+
+---
+
+## Installation
+
+### Install ESA v2.1 from the update branch
 
 ```bash
+pip install --no-cache-dir git+https://github.com/maxzameer/Entangled-State-Attention_v2.git@esa-v2.1-update
+```
+
+### Local development install
+
+```bash
+git clone https://github.com/maxzameer/Entangled-State-Attention_v2.git
+cd Entangled-State-Attention_v2
+git checkout esa-v2.1-update
 pip install -e .
 ```
 
-With optional Triton dependency:
+### With optional Triton dependency
 
 ```bash
 pip install -e .[triton]
 ```
 
-From PyPI:
+Package version:
 
-```bash
-pip install entangled-state-attention
+```python
+import esa
+print(esa.__version__)
 ```
 
-With optional Triton dependency:
+Expected:
 
-```bash
-pip install entangled-state-attention[triton]
+```text
+2.1.0
 ```
 
-## Quick start
+---
+
+# 1. ESA layer
+
+Use `ESA` when you want to integrate Entangled State Attention into your own PyTorch architecture.
 
 ```python
 import torch
@@ -56,10 +78,11 @@ layer = ESA(
     head=4,
     batch=16,
     block=1024,
-    backend="thunder",
+    backend="flare",
+    precision="fp16",
 )
 
-x = torch.randn(16, 1024, 128)
+x = torch.randn(16, 1024, 128, device="cuda")
 y = layer(x)
 
 print(y.shape)
@@ -71,9 +94,25 @@ Output:
 torch.Size([16, 1024, 128])
 ```
 
-## ESA layer API
+## Main arguments
 
-Recommended usage:
+```text
+embd       embedding dimension
+head       number of ESA heads
+batch      expected batch size
+block      expected sequence length
+backend    "flare", "thunder", or "pulse"
+precision  scan precision mode
+compass    optional Thunder scan setting
+```
+
+---
+
+# 2. Backends
+
+## Flare — default backend
+
+Flare is the default ESA v2.1 training backend.
 
 ```python
 from esa import ESA
@@ -81,35 +120,15 @@ from esa import ESA
 layer = ESA(
     embd=128,
     head=4,
-    batch=16,
     block=1024,
-    backend="thunder",
+    backend="flare",
+    precision="fp16",
 )
 ```
 
-Arguments:
+Flare is intended for high-performance GPU training.
 
-```text
-embd      = embedding dimension
-head      = number of heads
-batch     = expected batch size
-block     = expected sequence length
-backend   = "thunder", "flare", or "pulse"
-precision = scan precision mode
-compass   = Thunder scan setting
-```
-
-## Backend names
-
-```text
-thunder = optimized ESA backend
-flare   = experimental Triton ESA backend
-pulse   = base/reference ESA backend
-```
-
-## Thunder backend
-
-Thunder is the default optimized backend.
+## Thunder — optimized alternative
 
 ```python
 from esa import ESA
@@ -117,30 +136,27 @@ from esa import ESA
 layer = ESA(
     embd=128,
     head=4,
-    batch=16,
     block=1024,
     backend="thunder",
+    precision="fp16",
 )
 ```
 
-Thunder supports the `compass` scan setting.
+Thunder supports the `compass` scan setting:
 
 ```python
 layer = ESA(
     embd=128,
     head=4,
-    batch=16,
     block=1024,
     backend="thunder",
     compass=16,
 )
 ```
 
-Most users do not need to set `compass` manually.
+Most users do not need to choose a `compass` value manually.
 
-## Flare backend
-
-Flare is the experimental Triton backend.
+## Pulse — reference backend
 
 ```python
 from esa import ESA
@@ -148,350 +164,452 @@ from esa import ESA
 layer = ESA(
     embd=128,
     head=4,
-    batch=16,
-    block=1024,
-    backend="flare",
-)
-```
-
-Flare requires CUDA tensors and Triton.
-
-Install with:
-
-```bash
-pip install entangled-state-attention[triton]
-```
-
-## Pulse backend
-
-Pulse is the base/reference backend.
-
-```python
-from esa import ESA
-
-layer = ESA(
-    embd=128,
-    head=4,
-    batch=16,
     block=1024,
     backend="pulse",
 )
 ```
 
-Pulse is useful for correctness checks, debugging, and comparison.
+Pulse is useful for:
 
-## Precision
+- correctness checks
+- debugging
+- backend comparisons
+- research validation
+
+---
+
+# 3. Precision
 
 Default precision:
 
-```text
+```python
 precision="fp16"
 ```
 
-Supported precision strings:
+Supported precision modes:
 
 ```text
-fp16 = default training mode
-bf16 = optional mixed precision mode
-fp32 = debug/stability mode
-fp64 = correctness/reference mode
-fp8  = experimental mode
+fp16  default training mode
+bf16  optional mixed-precision mode
+fp32  stability and debugging mode
+fp64  high-precision reference mode
+fp8   experimental mode
 ```
 
-`precision="fp8"` is accepted as an experimental mode, but the current safe implementation uses FP16 scan accumulation. A true FP8 kernel can be added later.
+---
 
-# thunderBoost
+# 4. Complete ESA language model
 
-`thunderBoost()` is an optional utility for compiling and warming up an ESA layer or a full PyTorch model.
-
-It runs warmup once at the module/model level.
-
-It does not call `optimizer.step()`, so it does not train or update weights.
+ESA v2.1 includes `ESAModel`, a complete causal language model built directly from ESA layers.
 
 ```python
-from esa import thunderBoost
-```
+from esa import ESAModel, ESAModelConfig
 
-## Why use thunderBoost?
-
-Without `thunderBoost`, a compiled model may spend the first few training steps compiling and warming up.
-
-With `thunderBoost`, compile and warmup happen before real training starts.
-
-```text
-thunderBoost:
-    compile + warmup first
-    no optimizer step
-    no weight update
-
-training:
-    starts clean and fast
-```
-
-## Single ESA layer
-
-```python
-from esa import ESA, thunderBoost
-
-layer = ESA(
-    embd=128,
-    head=4,
-    batch=16,
+config = ESAModelConfig(
+    vocab_size=50257,
     block=1024,
-    backend="thunder",
+    n_layer=6,
+    head=6,
+    embd=384,
+    dropout=0.1,
+    backend="flare",
+    precision="fp16",
 )
 
-layer = thunderBoost(layer)
+model = ESAModel(config).cuda()
 ```
 
-With state information:
-
-```python
-layer, state = thunderBoost(
-    layer,
-    state=True,
-)
-
-print(state)
-```
-
-## Multi-layer ESA model
-
-For a model whose forward pass expects hidden vectors:
-
-```python
-model = thunderBoost(model)
-```
-
-If automatic shape detection is not possible, pass a sample batch tensor:
-
-```python
-import torch
-from esa import thunderBoost
-
-x = torch.randn(16, 1024, 128)
-
-model = thunderBoost(
-    model,
-    batch=x,
-)
-```
-
-With state information:
-
-```python
-model, state = thunderBoost(
-    model,
-    batch=x,
-    state=True,
-)
-
-print(state)
-```
-
-## Tiny language model / LLM usage
-
-For a causal language model, define a batch function.
-
-```python
-def batch(split="train"):
-    source = train_data if split == "train" else val_data
-
-    ix = torch.randint(
-        low=0,
-        high=len(source) - BLOCK_SIZE - 1,
-        size=(BATCH_SIZE,),
-    )
-
-    x = torch.stack([source[i:i + BLOCK_SIZE] for i in ix])
-    y = torch.stack([source[i + 1:i + BLOCK_SIZE + 1] for i in ix])
-
-    return x.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
-```
-
-Then boost the full model:
-
-```python
-model = thunderBoost(
-    model,
-    batch=batch,
-)
-```
-
-With state information:
-
-```python
-model, state = thunderBoost(
-    model,
-    batch=batch,
-    state=True,
-)
-
-print(state)
-```
-
-For a model whose forward pass is:
-
-```python
-logits, loss = model(x, y)
-```
-
-`thunderBoost()` automatically detects the scalar loss when the model returns:
-
-```python
-(logits, loss)
-```
-
-## Dictionary-style LLM batch
-
-`batch` can also return a dictionary.
-
-```python
-def batch(split="train"):
-    data = next(dataloader)
-
-    return {
-        "input_ids": data["input_ids"].to(DEVICE),
-        "labels": data["labels"].to(DEVICE),
-        "attention_mask": data["attention_mask"].to(DEVICE),
-    }
-```
-
-Then:
-
-```python
-model = thunderBoost(
-    model,
-    batch=batch,
-)
-```
-
-Internally, dictionary batches are passed as:
-
-```python
-output = model(**batch)
-```
-
-If the model output contains:
-
-```python
-{"loss": loss}
-```
-
-the loss is detected automatically.
-
-## thunderBoost return behavior
-
-By default:
-
-```python
-model = thunderBoost(
-    model,
-    batch=batch,
-)
-```
-
-returns only the boosted model.
-
-With `state=True`:
-
-```python
-model, state = thunderBoost(
-    model,
-    batch=batch,
-    state=True,
-)
-```
-
-returns:
+The default `ESAModelConfig` architecture values are:
 
 ```text
-model, state
+block      512
+n_layer    6
+head       6
+embd       384
+dropout    0.1
+backend    flare
+precision  fp16
 ```
 
-Example state dictionary:
+A model can also be created directly with keyword arguments:
 
 ```python
-{
-    "compiled": True,
-    "steps": 2,
-    "compile_mode": "reduce-overhead",
-    "device": "cuda",
-    "backward": True,
-    "amp": True,
-    "peak_mem_mb": 123.45,
-    "last_loss": 2.345,
-    "auto_move_disabled_count": 4,
-}
+from esa import ESAModel
+
+model = ESAModel(
+    vocab_size=50257,
+    block=1024,
+    n_layer=6,
+    head=6,
+    embd=384,
+    backend="flare",
+    precision="fp16",
+)
 ```
 
-## thunderBoost arguments
+## Forward pass
 
 ```python
-thunderBoost(
-    module,
-    batch=None,
-    state=False,
-    loss_fn=None,
-    steps=None,
+logits, loss = model(input_ids, targets)
+```
+
+For inference without targets:
+
+```python
+logits, loss = model(input_ids)
+```
+
+---
+
+# 5. Text generation with ESA-Lightning
+
+`ESAModel.generate()` is the public generation API.
+
+ESA-Lightning performs recurrent generation using ESA state instead of building an attention KV cache.
+
+```python
+text = model.generate(
+    prompt="Entangled State Attention is",
+    tokenizer=tokenizer,
+    max_new_tokens=256,
+    temperature=0.8,
+    top_k=50,
+)
+```
+
+You can also generate directly from token IDs:
+
+```python
+output_ids = model.generate(
+    input_ids=input_ids,
+    max_new_tokens=256,
+    temperature=0.8,
+    top_k=50,
+)
+```
+
+## Generation arguments
+
+```text
+input_ids        optional token tensor
+prompt           optional text prompt
+tokenizer        tokenizer used with prompt=
+max_new_tokens   number of tokens to generate
+temperature      sampling temperature
+top_k            optional top-k sampling
+top_p            optional nucleus sampling
+eos_token_id     optional early-stop token
+seed             optional sampling seed
+compile          compile recurrent generation step
+compile_mode     torch.compile mode
+progress_every   optional progress interval
+return_result    return detailed GenerationResult
+```
+
+Example with detailed statistics:
+
+```python
+result = model.generate(
+    prompt="The future of efficient language models",
+    tokenizer=tokenizer,
+    max_new_tokens=512,
+    return_result=True,
+)
+
+print(result.text)
+print(result.stats)
+```
+
+## ESA-Lightning low-level interface
+
+Advanced deployment and export workflows can use:
+
+```python
+logits, states, position = model.lightning_prefill(input_ids)
+logits, next_states = model.lightning_step(token, states, pos_tensor)
+```
+
+These methods are useful for recurrent inference and deployment targets such as ExecuTorch.
+
+For normal text generation, use:
+
+```python
+model.generate(...)
+```
+
+---
+
+# 6. Compile generation
+
+The ESA-Lightning recurrent decode step can be compiled:
+
+```python
+model.compile_generation()
+```
+
+Or:
+
+```python
+model.compile_generation(
+    mode="reduce-overhead",
+    fullgraph=False,
+)
+```
+
+`model.generate()` can also compile the generation path automatically:
+
+```python
+text = model.generate(
+    prompt="Once upon a time",
+    tokenizer=tokenizer,
+    max_new_tokens=256,
     compile=True,
-    compile_mode=None,
-    backward=True,
-    amp=True,
-    dtype=torch.float16,
-    device="auto",
 )
 ```
 
-### module
+---
 
-Any `torch.nn.Module`.
+# 7. Save a trained model
 
-Examples:
+Use the model lifecycle API:
 
 ```python
-layer = thunderBoost(layer)
-
-model = thunderBoost(
-    model,
-    batch=batch,
-)
+model.save("my_esa_model")
 ```
 
-### batch
-
-`batch` can be:
+The saved directory contains:
 
 ```text
-None
-Tensor
-tuple
-dict
-callable batch function
+my_esa_model/
+├── config.json
+├── model.pt
+└── metadata.json
 ```
 
-Examples:
+You can include custom metadata:
 
 ```python
-layer = thunderBoost(layer)
-
-model = thunderBoost(
-    model,
-    batch=x,
-)
-
-model = thunderBoost(
-    model,
-    batch=(x, y),
-)
-
-model = thunderBoost(
-    model,
-    batch={
-        "input_ids": input_ids,
-        "labels": labels,
+model.save(
+    "my_esa_model",
+    metadata={
+        "dataset": "English Wikipedia",
+        "training_steps": 20000,
+        "notes": "continued pretraining",
     },
 )
+```
+
+`metadata.json` records information such as:
+
+```text
+architecture       ESAModel
+generation_engine  ESA-Lightning
+backend            model training backend
+format_version     model format version
+```
+
+---
+
+# 8. Load a saved model
+
+Load the model directory, not the individual `.pt` file:
+
+```python
+from esa import ESAModel
+
+model = ESAModel.load(
+    "my_esa_model",
+    device="cuda",
+)
+```
+
+The loader reconstructs the model from:
+
+```text
+config.json
+model.pt
+```
+
+`metadata.json` is informational and is not required to reconstruct the model.
+
+Strict loading is enabled by default:
+
+```python
+model = ESAModel.load(
+    "my_esa_model",
+    device="cuda",
+    strict=True,
+)
+```
+
+---
+
+# 9. Continue training a loaded model
+
+```python
+from esa import ESAModel
+
+model = ESAModel.load(
+    "my_esa_model",
+    device="cuda",
+)
+
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=3e-4,
+)
+
+model.train()
+
+for input_ids, targets in train_loader:
+    input_ids = input_ids.cuda()
+    targets = targets.cuda()
+
+    optimizer.zero_grad(set_to_none=True)
+
+    logits, loss = model(
+        input_ids,
+        targets,
+    )
+
+    loss.backward()
+    optimizer.step()
+```
+
+---
+
+# 10. Training checkpoints
+
+ESA v2.1 includes `Trainer` for checkpoint management and exact resume.
+
+```python
+from esa import Trainer
+
+trainer = Trainer(
+    model,
+    optimizer=optimizer,
+    checkpoint_dir="checkpoints",
+    save_every=1000,
+    save_at=[5000, 10000, 20000],
+    save_best=True,
+    save_last=True,
+    keep_last_n=3,
+)
+```
+
+Supported checkpoint behavior:
+
+```text
+save_every=N       save periodically
+save_at=[...]      preserve exact requested checkpoints
+save_best=True     save best validation checkpoint
+save_last=True     save final/latest checkpoint
+keep_last_n=N      retain only the latest periodic checkpoints
+```
+
+## Save during training
+
+```python
+saved_paths = trainer.maybe_save(
+    step=step,
+    val_loss=val_loss,
+)
+```
+
+## Save a named checkpoint
+
+```python
+trainer.save_checkpoint(
+    step=5000,
+    name="wikipedia_stage_1",
+    protected=True,
+)
+```
+
+## Save the final checkpoint
+
+```python
+trainer.save_final()
+```
+
+A training checkpoint contains the model files plus:
+
+```text
+training_state.pt
+```
+
+The training state can include:
+
+- current step
+- best validation loss
+- optimizer state
+- scheduler state
+- gradient scaler state
+- Python RNG state
+- PyTorch RNG state
+- CUDA RNG state
+
+---
+
+# 11. Resume training
+
+Resume the latest checkpoint:
+
+```python
+trainer.resume_from("latest")
+```
+
+Resume the best checkpoint:
+
+```python
+trainer.resume_from("best")
+```
+
+Resume a specific checkpoint:
+
+```python
+trainer.resume_from(
+    "checkpoints/step_010000"
+)
+```
+
+Or load a checkpoint directly:
+
+```python
+trainer.load_checkpoint(
+    "checkpoints/step_010000"
+)
+```
+
+This restores the model and, when available, optimizer, scheduler, scaler, and RNG state.
+
+---
+
+# 12. Model information
+
+```python
+info = model.model_info()
+print(info)
+```
+
+The returned dictionary includes the model configuration together with information such as:
+
+```text
+parameters
+device
+generation_engine = ESA-Lightning
+```
+
+---
+
+# 13. thunderBoost
+
+`thunderBoost()` is an optional compile and warmup utility for ESA layers and PyTorch models.
+
+It performs warmup without calling `optimizer.step()`, so it does not update model weights.
+
+```python
+from esa import thunderBoost
 
 model = thunderBoost(
     model,
@@ -499,24 +617,7 @@ model = thunderBoost(
 )
 ```
 
-### state
-
-Default:
-
-```python
-state=False
-```
-
-So this returns only the model:
-
-```python
-model = thunderBoost(
-    model,
-    batch=batch,
-)
-```
-
-This returns the model and state:
+With state information:
 
 ```python
 model, state = thunderBoost(
@@ -526,155 +627,16 @@ model, state = thunderBoost(
 )
 ```
 
-### loss_fn
+`thunderBoost()` is separate from normal ESA model training and from ESA-Lightning generation.
 
-Optional function for extracting scalar loss from custom model outputs.
+---
 
-Example:
+# 14. Compass
 
-```python
-model = thunderBoost(
-    model,
-    batch=batch,
-    loss_fn=lambda output: output.my_loss,
-)
-```
-
-### steps
-
-Warmup steps.
-
-If omitted, the default comes from:
+`compass()` evaluates Thunder ESA across candidate scan settings and recommends a practical value for a workload.
 
 ```python
-DEFAULT_BENCHMARK_CONFIG.compile_warmup_steps
-```
-
-### compile
-
-Default:
-
-```python
-compile=True
-```
-
-Uses:
-
-```python
-torch.compile(module, mode=compile_mode, fullgraph=False)
-```
-
-### backward
-
-Default:
-
-```python
-backward=True
-```
-
-Runs backward during warmup, but does not call `optimizer.step()`.
-
-This warms the training path without changing weights.
-
-### amp
-
-Default:
-
-```python
-amp=True
-```
-
-Uses CUDA autocast when CUDA is available.
-
-## Important device rule after thunderBoost
-
-After `thunderBoost()`, inputs should already be on the same device as the model.
-
-Correct:
-
-```python
-device = next(model.parameters()).device
-x = torch.randn(16, 1024, 128, device=device)
-
-y = model(x)
-```
-
-Avoid this after boosting:
-
-```python
-x = torch.randn(16, 1024, 128)
-y = model(x)
-```
-
-During boosting, ESA internal auto device-copy is disabled to avoid CUDA graph partitioning from device-copy operations.
-
-Normal non-boosted ESA can still auto-move inputs.
-
-# Benchmark presets
-
-ESA provides benchmark preset configs.
-
-```python
-from esa import (
-    DEFAULT_BENCHMARK_CONFIG,
-    FAST_BENCHMARK_CONFIG,
-    PAPER_BENCHMARK_CONFIG,
-)
-```
-
-## Default config
-
-```python
-from esa import DEFAULT_BENCHMARK_CONFIG
-
-print(DEFAULT_BENCHMARK_CONFIG.compile_warmup_steps)
-print(DEFAULT_BENCHMARK_CONFIG.speed_warmup_steps)
-print(DEFAULT_BENCHMARK_CONFIG.speed_bench_steps)
-print(DEFAULT_BENCHMARK_CONFIG.compile_mode)
-```
-
-## Dict-style benchmark defaults
-
-```python
-from esa import BENCHMARK_DEFAULTS
-
-COMPILE_MODE = BENCHMARK_DEFAULTS["compile_mode"]
-COMPILE_WARMUP_STEPS = BENCHMARK_DEFAULTS["compile_warmup_steps"]
-SPEED_WARMUP_STEPS = BENCHMARK_DEFAULTS["speed_warmup_steps"]
-SPEED_BENCH_STEPS = BENCHMARK_DEFAULTS["speed_bench_steps"]
-```
-
-Available dict presets:
-
-```python
-from esa import (
-    BENCHMARK_DEFAULTS,
-    FAST_BENCHMARK_DEFAULTS,
-    PAPER_BENCHMARK_DEFAULTS,
-)
-```
-
-Preset meanings:
-
-```text
-DEFAULT_BENCHMARK_CONFIG = balanced development benchmark
-FAST_BENCHMARK_CONFIG    = quick smoke test
-PAPER_BENCHMARK_CONFIG   = more stable paper/README benchmark
-```
-
-# Compass
-
-`compass()` evaluates Thunder ESA across candidate scan settings and recommends a practical value for the user’s workload.
-
-```python
-from esa import ESA, compass
-
-
-def evaluate_fn(*, backend: str, compass: int | None, precision: str):
-    # Replace this with your own short training/evaluation loop.
-    # Return validation loss or perplexity, and tokens/sec.
-    ...
-
+from esa import compass
 
 result = compass(
     evaluate_fn=evaluate_fn,
@@ -684,159 +646,136 @@ result = compass(
     quality_tolerance=0.02,
 )
 
-layer = ESA(
-    embd=128,
-    head=4,
-    batch=16,
-    block=1024,
-    backend="thunder",
-    compass=result.recommended,
-    precision="fp16",
-)
+print(result.recommended)
+print(result.summary())
 ```
 
-`CompassResult` contains:
-
-```python
-result.recommended   # best practical scan setting
-result.best_quality  # setting with lowest validation loss / PPL
-result.fastest       # setting with highest tokens/sec
-result.rows          # detailed metric rows
-result.summary()     # human-readable recommendation
-```
-
-# Minimal forward example
-
-```python
-import torch
-from esa import ESA
-
-x = torch.randn(2, 128, 128)
-
-layer = ESA(
-    embd=128,
-    head=4,
-    backend="thunder",
-)
-
-y = layer(x)
-
-print(y.shape)
-```
-
-Output:
+`CompassResult` provides:
 
 ```text
-torch.Size([2, 128, 128])
+recommended
+best_quality
+fastest
+rows
+summary()
 ```
 
-# TinyLM example
+---
+
+# 15. Public API
 
 ```python
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-from esa import ESA, thunderBoost
-
-
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-BATCH_SIZE = 16
-BLOCK_SIZE = 512
-N_EMBD = 128
-N_HEAD = 4
-N_LAYER = 2
-
-
-class ESABlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.ln1 = nn.LayerNorm(N_EMBD)
-
-        self.esa = ESA(
-            embd=N_EMBD,
-            head=N_HEAD,
-            batch=BATCH_SIZE,
-            block=BLOCK_SIZE,
-            backend="thunder",
-        )
-
-        self.ln2 = nn.LayerNorm(N_EMBD)
-
-        self.ffn = nn.Sequential(
-            nn.Linear(N_EMBD, 4 * N_EMBD, bias=False),
-            nn.GELU(),
-            nn.Linear(4 * N_EMBD, N_EMBD, bias=False),
-        )
-
-    def forward(self, x):
-        x = x + self.esa(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
-        return x
-
-
-class ESATinyLM(nn.Module):
-    def __init__(self, vocab_size):
-        super().__init__()
-
-        self.token_emb = nn.Embedding(vocab_size, N_EMBD)
-        self.pos_emb = nn.Embedding(BLOCK_SIZE, N_EMBD)
-
-        self.blocks = nn.ModuleList([
-            ESABlock()
-            for _ in range(N_LAYER)
-        ])
-
-        self.ln_f = nn.LayerNorm(N_EMBD)
-        self.lm_head = nn.Linear(N_EMBD, vocab_size, bias=False)
-
-    def forward(self, idx, targets=None):
-        B, T = idx.shape
-
-        pos = torch.arange(0, T, device=idx.device)
-
-        x = self.token_emb(idx) + self.pos_emb(pos)
-
-        for block in self.blocks:
-            x = block(x)
-
-        x = self.ln_f(x)
-        logits = self.lm_head(x)
-
-        loss = None
-
-        if targets is not None:
-            loss = F.cross_entropy(
-                logits.view(B * T, logits.size(-1)),
-                targets.view(B * T),
-            )
-
-        return logits, loss
-
-
-model = ESATinyLM(vocab_size).to(DEVICE)
-
-model = thunderBoost(
-    model,
-    batch=batch,
+from esa import (
+    ESA,
+    ESAConfig,
+    ESAModel,
+    ESAModelConfig,
+    Trainer,
+    TrainerState,
+    GenerationResult,
+    GenerationStats,
+    FlareESA,
+    ThunderESA,
+    PulseESA,
+    compass,
+    CompassResult,
+    thunderBoost,
 )
 ```
 
-# Research note
+## Recommended high-level workflow
 
-ESA v2 is research software.
+### Build
 
-Thunder is the default optimized backend, Flare is experimental, and Pulse is the reference backend.
+```python
+model = ESAModel(
+    vocab_size=vocab_size,
+    backend="flare",
+)
+```
 
-Results can depend on model size, sequence length, precision, GPU, dataset, and training setup.
+### Train
 
-ESA does not automatically run benchmark steps during normal layer usage. Benchmark and warmup utilities are provided separately through `thunderBoost()` and benchmark config presets.
+```python
+logits, loss = model(input_ids, targets)
+```
+
+### Generate
+
+```python
+text = model.generate(
+    prompt=prompt,
+    tokenizer=tokenizer,
+    max_new_tokens=256,
+)
+```
+
+### Save
+
+```python
+model.save("my_model")
+```
+
+### Load
+
+```python
+model = ESAModel.load(
+    "my_model",
+    device="cuda",
+)
+```
+
+### Resume exact training state
+
+```python
+trainer.resume_from("latest")
+```
+
+---
+
+# 16. Architecture roles
+
+ESA v2.1 separates training and generation responsibilities clearly:
+
+```text
+Training / full-sequence execution
+    Flare      default
+    Thunder    optimized alternative
+    Pulse      reference
+
+Text generation
+    ESA-Lightning
+        prefill
+        recurrent state
+        one-token decode step
+        model.generate()
+```
+
+ESA-Lightning is not exposed as `backend="lightning"`.
+
+---
+
+# Research status
+
+ESA v2.1 is research software.
+
+Performance depends on:
+
+- model size
+- sequence length
+- batch size
+- precision
+- GPU architecture
+- dataset
+- training configuration
+
+Benchmark results should be reported with complete hardware and configuration details.
+
+---
 
 # Citation
 
-If you use Entangled State Attention v2, please cite:
+If you use Entangled State Attention in academic work, please cite:
 
 ```bibtex
 @misc{hussain2026entangledstateattentionv2,
@@ -853,8 +792,12 @@ If you use Entangled State Attention v2, please cite:
 Zenodo citation:
 
 ```text
-Hussain, Z., & Hussain, A. (2026). Entangled State Attention: Efficient Long-Context Causal Modeling via Associative State Scans (2.0.0). Zenodo. https://doi.org/10.5281/zenodo.21218821
+Hussain, Z., & Hussain, A. (2026).
+Entangled State Attention: Efficient Long-Context Causal Modeling via Associative State Scans (2.0.0).
+Zenodo. https://doi.org/10.5281/zenodo.21218821
 ```
+
+---
 
 # License
 
