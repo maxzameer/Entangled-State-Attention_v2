@@ -32,7 +32,7 @@ ESA v2.1 provides both a reusable sequence layer and a complete causal language 
 ### Install ESA v2.1 from the update branch
 
 ```bash
-pip install --no-cache-dir git+https://github.com/maxzameer/Entangled-State-Attention_v2.git@esa-v2.1-update
+pip install --no-cache-dir git+https://github.com/maxzameer/Entangled-State-Attention_v2.git@main
 ```
 
 ### Local development install
