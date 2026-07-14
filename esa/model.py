@@ -870,7 +870,7 @@ class ESAModel(nn.Module):
         tokenizer: Any | None = None,
         input_ids: torch.Tensor | None = None,
         seek: int = 128,
-        prefill: str = "thunder_compiled_16",
+        prefill: str = "thunder_16",
         
         runtime: str = "lightning",
         temperature: float = 1.0,
