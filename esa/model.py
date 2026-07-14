@@ -466,6 +466,23 @@ class ESAModel(nn.Module):
             stacklevel=2,
         )
 
+    def _cudagraph_mark_step_begin(self) -> None:
+        """Mark a new CUDA-graph iteration when the PyTorch API is available.
+
+        ``torch.compile(mode="reduce-overhead")`` may use CUDA graphs. ESA
+        Lightning carries recurrent state from one compiled invocation into the
+        next, so explicitly marking decode-step boundaries prevents PyTorch from
+        treating successive autoregressive steps as one graph iteration.
+        """
+        if self.device.type != "cuda":
+            return
+
+        compiler = getattr(torch, "compiler", None)
+        marker = getattr(compiler, "cudagraph_mark_step_begin", None)
+
+        if marker is not None:
+            marker()
+
     @torch.no_grad()
     def prefill(
         self,
@@ -607,6 +624,7 @@ class ESAModel(nn.Module):
         input_ids: torch.Tensor | None = None,
         seek: int = 128,
         prefill: str = "thunder_compiled_16",
+        
         runtime: str = "lightning",
         temperature: float = 1.0,
         top_k: int | None = None,
@@ -693,6 +711,14 @@ class ESAModel(nn.Module):
                 fullgraph=False,
                 dynamic=True,
             )
+
+            # A compiled prefill may return CUDA-graph-managed output storage.
+            # Lightning decode carries ESA state across many later invocations,
+            # so move the recurrent state into stable, independently owned
+            # storage before the first decode step.
+            if states.is_cuda:
+                states = states.clone()
+
             sync()
             prefill_seconds = time.perf_counter() - prefill_start
 
@@ -705,12 +731,23 @@ class ESAModel(nn.Module):
             generated = [next_token]
 
             step_fn = self.lightning_step
+            using_compiled_runtime = False
+
             if compile_runtime and self.device.type == "cuda":
                 key = (compile_mode, False)
-                if self._compiled_lightning_step is None or self._compiled_lightning_key != key:
-                    self.compile_generation(mode=compile_mode, fullgraph=False)
+
+                if (
+                    self._compiled_lightning_step is None
+                    or self._compiled_lightning_key != key
+                ):
+                    self.compile_generation(
+                        mode=compile_mode,
+                        fullgraph=False,
+                    )
+
                 if self._compiled_lightning_step is not None:
                     step_fn = self._compiled_lightning_step
+                    using_compiled_runtime = True
 
             decode_target = seek - 1
             sync()
@@ -722,13 +759,27 @@ class ESAModel(nn.Module):
                     device=self.device,
                     dtype=torch.long,
                 )
+                # ``reduce-overhead`` may capture the Lightning step in a
+                # CUDA graph. Each autoregressive token is a new logical graph
+                # iteration, and the recurrent state must survive subsequent
+                # graph replays.
+                if using_compiled_runtime:
+                    self._cudagraph_mark_step_begin()
+
                 logits, states_out = step_fn(
                     next_token.squeeze(1),
                     states,
                     pos_tensor,
                 )
-                # Preserve the tested ESA-Lightning compiled-state boundary.
-                states = states_out.clone()
+
+                # Never carry CUDA-graph-owned output storage directly into the
+                # next token step. ESA state is tiny, so this correctness copy
+                # is inexpensive compared with a KV cache.
+                states = (
+                    states_out.clone()
+                    if states_out.is_cuda
+                    else states_out
+                )
                 next_token = sample_next_token(
                     logits,
                     temperature=temperature,
