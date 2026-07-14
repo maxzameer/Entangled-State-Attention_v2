@@ -592,49 +592,120 @@ class ESAModel(nn.Module):
         fullgraph: bool = False,
         dynamic: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
-        """Run prompt prefill with a selectable ESA execution engine."""
-        spec = parse_engine_spec(engine)
+        """
+        Run prompt prefill with a selectable ESA execution engine.
+
+        Compiled prefill:
+            - dynamic prompt lengths
+            - CUDA Graphs disabled
+
+        Lightning decode is compiled separately using the fast
+        reduce-overhead path.
+        """
+
+        spec = parse_engine_spec(
+            engine
+        )
+
         backend = spec.backend
         compass = spec.compass
 
-        def eager(ids: torch.Tensor):
+        def eager(
+            ids: torch.Tensor,
+        ):
             return self._prefill_eager(
                 ids,
                 backend=backend,
                 compass=compass,
             )
 
-        if spec.compiled and self.device.type == "cuda" and hasattr(torch, "compile"):
+        # ========================================================
+        # COMPILED PREFILL
+        # ========================================================
+
+        if (
+            spec.compiled
+            and self.device.type == "cuda"
+            and hasattr(torch, "compile")
+        ):
+
             key = (
                 spec.backend,
                 spec.compass,
-                compile_mode,
                 bool(fullgraph),
                 bool(dynamic),
+                False,  # prefill CUDA Graphs disabled
             )
-            compiled_fn = self._compiled_prefill_cache.get(key)
-            if compiled_fn is None and key not in self._prefill_compile_failures:
+
+            compiled_fn = (
+                self._compiled_prefill_cache.get(
+                    key
+                )
+            )
+
+            if (
+                compiled_fn is None
+                and key not in self._prefill_compile_failures
+            ):
+
                 try:
+
                     compiled_fn = torch.compile(
                         eager,
-                        mode=compile_mode,
                         fullgraph=fullgraph,
-                        dynamic=dynamic,
+                        dynamic=True,
+                        options={
+                            "triton.cudagraphs": False,
+                        },
                     )
-                    self._compiled_prefill_cache[key] = compiled_fn
+
+                    self._compiled_prefill_cache[
+                        key
+                    ] = compiled_fn
+
                 except Exception as exc:
-                    self._prefill_compile_failures.add(key)
-                    self._warn_compile_fallback("prefill", exc)
+
+                    self._prefill_compile_failures.add(
+                        key
+                    )
+
+                    self._warn_compile_fallback(
+                        "prefill",
+                        exc,
+                    )
+
             if compiled_fn is not None:
+
                 try:
-                    return compiled_fn(input_ids)
+
+                    return compiled_fn(
+                        input_ids
+                    )
+
                 except Exception as exc:
-                    self._prefill_compile_failures.add(key)
-                    self._compiled_prefill_cache.pop(key, None)
-                    self._warn_compile_fallback("prefill", exc)
 
-        return eager(input_ids)
+                    self._prefill_compile_failures.add(
+                        key
+                    )
 
+                    self._compiled_prefill_cache.pop(
+                        key,
+                        None,
+                    )
+
+                    self._warn_compile_fallback(
+                        "prefill",
+                        exc,
+                    )
+
+        # ========================================================
+        # EAGER PREFILL
+        # ========================================================
+
+        return eager(
+            input_ids
+        )
+    
     @torch.no_grad()
     def lightning_prefill(
         self,
@@ -686,51 +757,105 @@ class ESAModel(nn.Module):
 
     
 
-
-
     def compile_generation(
         self,
         *,
         mode: str = "reduce-overhead",
         fullgraph: bool = False,
     ) -> "ESAModel":
-        """Compile the fixed-shape ESA-Lightning decode step."""
+        """
+        Compile the fixed-shape ESA-Lightning decode step.
+
+        Lightning decode always processes one token at a time, so its input shape
+        is stable. Keep the fast reduce-overhead compilation strategy used by
+        ESA v2.1.0.
+
+        Prefill and decode intentionally use different compilation policies:
+
+            Prefill:
+                dynamic=True
+                CUDA Graphs disabled
+
+            Decode:
+                dynamic=False
+                mode="reduce-overhead"
+                CUDA Graph acceleration available
+        """
 
         if (
-            not hasattr(torch, "compile")
+            not hasattr(
+                torch,
+                "compile",
+            )
             or self.device.type != "cuda"
         ):
             return self
 
+
         key = (
             mode,
-            bool(fullgraph),
+            bool(
+                fullgraph
+            ),
         )
 
+
+        # ==============================================================================================
+        # REUSE EXISTING COMPILED LIGHTNING STEP
+        # ==============================================================================================
+
         if (
-            self._compiled_lightning_step is not None
-            and self._compiled_lightning_key == key
+            self._compiled_lightning_step
+            is not None
+            and self._compiled_lightning_key
+            == key
         ):
             return self
 
+
+        # ==============================================================================================
+        # COMPILE LIGHTNING
+        # ==============================================================================================
+
         try:
-            self._compiled_lightning_step = torch.compile(
-                self.lightning_step,
-                mode=mode,
-                fullgraph=fullgraph,
-                dynamic=False,
+
+            self._compiled_lightning_step = (
+                torch.compile(
+                    self.lightning_step,
+
+                    mode=mode,
+
+                    fullgraph=fullgraph,
+
+                    # Lightning is fixed-shape:
+                    # one token + fixed ESA state.
+                    dynamic=False,
+                )
             )
 
-            self._compiled_lightning_key = key
+
+            self._compiled_lightning_key = (
+                key
+            )
+
 
         except Exception as exc:
-            self._compiled_lightning_step = None
-            self._compiled_lightning_key = None
+
+            self._compiled_lightning_step = (
+                None
+            )
+
+
+            self._compiled_lightning_key = (
+                None
+            )
+
 
             self._warn_compile_fallback(
                 "runtime",
                 exc,
             )
+
 
         return self
 
