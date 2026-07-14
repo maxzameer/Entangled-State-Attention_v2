@@ -37,6 +37,60 @@ class GenerationResult:
     text: str | list[str] | None = None
 
 
+@dataclass(frozen=True)
+class EngineSpec:
+    """Parsed ESA execution-engine specification."""
+
+    backend: str
+    compiled: bool = False
+    compass: int | None = None
+
+
+def parse_engine_spec(
+    value: str,
+    *,
+    default_thunder_compass: int = 16,
+) -> EngineSpec:
+    """Parse names such as ``thunder_compiled_16`` or ``flare``."""
+
+    name = str(value).strip().lower().replace("-", "_")
+    if not name:
+        raise ValueError("Engine name must not be empty.")
+
+    if name in {"lightning", "lightning_compiled"}:
+        return EngineSpec(
+            backend="lightning",
+            compiled=name.endswith("_compiled"),
+            compass=None,
+        )
+
+    parts = [part for part in name.split("_") if part]
+    backend = parts[0]
+    if backend not in {"thunder", "flare", "pulse"}:
+        raise ValueError(
+            f"Unknown ESA engine {value!r}. Supported engines are "
+            "lightning, thunder, flare, and pulse."
+        )
+
+    compiled = "compiled" in parts[1:]
+    numeric = [int(part) for part in parts[1:] if part.isdigit()]
+
+    if backend == "thunder":
+        if len(numeric) > 1:
+            raise ValueError(f"Thunder engine has multiple compass values: {value!r}")
+        compass = numeric[0] if numeric else int(default_thunder_compass)
+        if compass <= 0:
+            raise ValueError(f"Thunder compass must be positive, got {compass}.")
+    else:
+        if numeric:
+            raise ValueError(
+                f"Compass values are only valid for Thunder engines, got {value!r}."
+            )
+        compass = None
+
+    return EngineSpec(backend=backend, compiled=compiled, compass=compass)
+
+
 def _unwrap_backend(module: torch.nn.Module) -> torch.nn.Module:
     current = getattr(module, "layer", module)
     seen: set[int] = set()
@@ -92,9 +146,11 @@ def _state_dtype(
     module: torch.nn.Module,
     device: torch.device,
     input_dtype: torch.dtype,
+    *,
+    backend_name: str | None = None,
 ) -> torch.dtype:
     backend = _unwrap_backend(module)
-    name = _backend_name(module)
+    name = (backend_name or _backend_name(module)).lower()
 
     if name == "flare":
         return input_dtype
@@ -168,9 +224,12 @@ def _backend_scan(
     module: torch.nn.Module,
     A: torch.Tensor,
     B_write: torch.Tensor,
+    *,
+    backend_override: str | None = None,
+    compass_override: int | None = None,
 ) -> torch.Tensor:
     backend = _unwrap_backend(module)
-    name = _backend_name(module)
+    name = (backend_override or _backend_name(module)).lower()
 
     if name == "flare":
         from .backends.flare import flare_scan
@@ -178,47 +237,34 @@ def _backend_scan(
         return flare_scan(
             A.contiguous(),
             B_write.contiguous(),
-            block_ch=int(
-                getattr(
-                    backend,
-                    "block_ch",
-                    128,
-                )
-            ),
+            block_ch=int(getattr(backend, "block_ch", 128)),
         )
 
     dtype = _state_dtype(
         module,
         A.device,
         A.dtype,
+        backend_name=name,
     )
-
     A = A.to(dtype).contiguous()
     B_write = B_write.to(dtype).contiguous()
 
     if name == "thunder":
         from .backends.thunder import thunder_scan
 
-        return thunder_scan(
-            A,
-            B_write,
-            compass=int(
-                getattr(
-                    backend,
-                    "compass",
-                    16,
-                )
-            ),
+        compass = (
+            int(compass_override)
+            if compass_override is not None
+            else int(getattr(backend, "compass", 16) or 16)
         )
+        return thunder_scan(A, B_write, compass=compass)
 
     if name == "pulse":
         from .backends.pulse import pulse_scan
+
         return pulse_scan(A, B_write)
 
-    raise ValueError(
-        f"Unsupported ESA backend for generation: {name!r}"
-    )
-
+    raise ValueError(f"Unsupported ESA backend for prefill: {name!r}")
 
 def _readout(
     module: torch.nn.Module,
@@ -286,16 +332,19 @@ def lightning_init_state(
 
 
 @torch.no_grad()
-def lightning_prefill(
+def esa_prefill(
     module: torch.nn.Module,
     x: torch.Tensor,
     state: torch.Tensor | None = None,
+    *,
+    backend: str | None = None,
+    compass: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    ESA-Lightning prompt prefill.
+    ESA prompt prefill with an optional execution-backend override.
 
-    Exact recurrence:
-        state_t = A_t * state_{t-1} + B_write_t
+    ``backend=None`` preserves the model's configured backend.
+    ``backend='lightning'`` performs the exact recurrent scan directly.
     """
     if x.ndim != 3 or x.size(1) <= 0:
         raise ValueError(
@@ -304,34 +353,44 @@ def lightning_prefill(
 
     B = x.size(0)
     _, head, head_dim = _dimensions(module)
+    q, A, B_write = _project_affine_terms(module, x)
+    requested = None if backend is None else str(backend).lower()
 
-    q, A, B_write = _project_affine_terms(
-        module,
-        x,
-    )
-
-    if state is None:
+    if state is None and requested != "lightning":
         states = _backend_scan(
             module,
             A,
             B_write,
+            backend_override=requested,
+            compass_override=compass,
         )
     else:
-        current = (
-            state.reshape(B, head, head_dim)
-            if state.ndim == 2
-            else state
-        )
+        if state is None:
+            state_dtype = _state_dtype(
+                module,
+                A.device,
+                A.dtype,
+                backend_name=_backend_name(module),
+            )
+            current = torch.zeros(
+                (B, head, head_dim),
+                device=A.device,
+                dtype=state_dtype,
+            )
+        else:
+            current = (
+                state.reshape(B, head, head_dim)
+                if state.ndim == 2
+                else state
+            )
 
         outputs = []
-
         for t in range(x.size(1)):
             current = (
                 A[:, t].to(current.dtype) * current
                 + B_write[:, t].to(current.dtype)
             )
             outputs.append(current)
-
         states = torch.stack(outputs, dim=1)
 
     y = _readout(
@@ -340,9 +399,12 @@ def lightning_prefill(
         states,
         output_dtype=x.dtype,
     )
-
     return y, states[:, -1].contiguous()
 
+
+# Backward-compatible low-level name. With no override it keeps the model's
+# configured backend, matching ESA v2.1 behavior.
+lightning_prefill = esa_prefill
 
 def lightning_decode_step(
     module: torch.nn.Module,

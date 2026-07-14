@@ -26,7 +26,7 @@ class ESA(nn.Module):
         head: int = 4,
         batch: int | None = None,
         block: int | None = None,
-        backend: str = "flare",
+        backend: str = "thunder",
         precision: str = "fp16",
         *,
         compass: int | None = None,
@@ -195,12 +195,18 @@ class ESA(nn.Module):
         self,
         x: torch.Tensor,
         state: torch.Tensor | None = None,
+        *,
+        backend: str | None = None,
+        compass: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        from .generation import lightning_prefill
-        return lightning_prefill(
+        from .generation import esa_prefill
+
+        return esa_prefill(
             self,
             self._prepare_input(x),
             state=state,
+            backend=backend,
+            compass=compass,
         )
 
     def decode_step(

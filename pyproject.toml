@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entangled-state-attention"
-version = "2.1.0"
+version = "2.1.1"
 description = "Entangled State Attention v2.1: Flare-default ESA, four backends, ESA-Lightning generation, model lifecycle and checkpoints."
 readme = "README.md"
 requires-python = ">=3.10"

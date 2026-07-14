@@ -13,7 +13,7 @@ ESA v2.1 provides both a reusable sequence layer and a complete causal language 
 ## ESA v2.1 at a glance
 
 - `ESA` — reusable PyTorch sequence layer
-- `Flare` — default high-performance training backend
+- `Thunder C16` — default high-performance training backend
 - `Thunder` — optimized alternative backend
 - `Pulse` — reference backend for correctness and comparison
 - `ESAModel` — complete causal language model built from ESA layers
@@ -26,6 +26,40 @@ ESA v2.1 provides both a reusable sequence layer and a complete causal language 
 > Public training backends are `flare`, `thunder`, and `pulse`.
 
 ---
+
+
+## Optimized defaults
+
+ESA now uses benchmark-guided defaults for the common path:
+
+- **Training backend:** Thunder C16
+- **Training compilation:** `torch.compile(..., mode="reduce-overhead", fullgraph=False)` on CUDA
+- **Generation prefill:** `thunder_compiled_16`
+- **Autoregressive runtime:** ESA-Lightning
+
+Normal text generation is intentionally simple:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+)
+```
+
+Advanced users can override the prefill engine:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    prefill="thunder_compiled_32",
+    runtime="lightning",
+)
+```
+
+Supported prefill names include `lightning`, Thunder C1/C4/C8/C16/C32/C64 in eager or compiled form, plus eager/compiled Flare and Pulse. `max_new_tokens` remains accepted as a backward-compatible alias for `seek`.
 
 ## Installation
 
@@ -110,7 +144,7 @@ compass    optional Thunder scan setting
 
 # 2. Backends
 
-## Flare — default backend
+## Thunder C16 — default backend
 
 Flare is the default ESA v2.1 training backend.
 
