@@ -591,10 +591,27 @@ class ESAModel(nn.Module):
         mode: str = "reduce-overhead",
         fullgraph: bool = False,
     ) -> "ESAModel":
+        """Compile the fixed-shape ESA-Lightning decode step.
+
+        Lightning decode carries recurrent ESA state from one invocation into
+        the next. PyTorch ``reduce-overhead`` normally enables CUDA Graphs, but
+        CUDA-graph-managed output storage is a poor fit for this recurrent
+        state handoff on some PyTorch/CUDA combinations. Keep TorchInductor
+        compilation enabled while explicitly disabling CUDA Graph capture for
+        the runtime step.
+        """
         if not hasattr(torch, "compile") or self.device.type != "cuda":
             return self
 
-        key = (mode, bool(fullgraph))
+        # Include the CUDA-graph policy in the cache key so future runtime
+        # policies cannot accidentally reuse an incompatible compiled callable.
+        cudagraphs = False
+        key = (
+            mode,
+            bool(fullgraph),
+            cudagraphs,
+        )
+
         if (
             self._compiled_lightning_step is not None
             and self._compiled_lightning_key == key
@@ -607,12 +624,19 @@ class ESAModel(nn.Module):
                 mode=mode,
                 fullgraph=fullgraph,
                 dynamic=False,
+                options={
+                    "triton.cudagraphs": cudagraphs,
+                },
             )
             self._compiled_lightning_key = key
         except Exception as exc:
             self._compiled_lightning_step = None
             self._compiled_lightning_key = None
-            self._warn_compile_fallback("runtime", exc)
+            self._warn_compile_fallback(
+                "runtime",
+                exc,
+            )
+
         return self
 
     @torch.inference_mode()
@@ -734,7 +758,11 @@ class ESAModel(nn.Module):
             using_compiled_runtime = False
 
             if compile_runtime and self.device.type == "cuda":
-                key = (compile_mode, False)
+                key = (
+                    compile_mode,
+                    False,
+                    False,  # runtime CUDA Graphs are intentionally disabled
+                )
 
                 if (
                     self._compiled_lightning_step is None
@@ -759,22 +787,38 @@ class ESAModel(nn.Module):
                     device=self.device,
                     dtype=torch.long,
                 )
-                # ``reduce-overhead`` may capture the Lightning step in a
-                # CUDA graph. Each autoregressive token is a new logical graph
-                # iteration, and the recurrent state must survive subsequent
-                # graph replays.
-                if using_compiled_runtime:
-                    self._cudagraph_mark_step_begin()
+                try:
+                    logits, states_out = step_fn(
+                        next_token.squeeze(1),
+                        states,
+                        pos_tensor,
+                    )
+                except Exception as exc:
+                    if not using_compiled_runtime:
+                        raise
 
-                logits, states_out = step_fn(
-                    next_token.squeeze(1),
-                    states,
-                    pos_tensor,
-                )
+                    # ``torch.compile`` is lazy: graph lowering/capture errors
+                    # can appear on the first real invocation rather than when
+                    # ``torch.compile(...)`` returns. Fall back once to eager
+                    # Lightning instead of crashing generation.
+                    self._compiled_lightning_step = None
+                    self._compiled_lightning_key = None
+                    self._warn_compile_fallback(
+                        "runtime-execution",
+                        exc,
+                    )
+                    step_fn = self.lightning_step
+                    using_compiled_runtime = False
 
-                # Never carry CUDA-graph-owned output storage directly into the
-                # next token step. ESA state is tiny, so this correctness copy
-                # is inexpensive compared with a KV cache.
+                    logits, states_out = step_fn(
+                        next_token.squeeze(1),
+                        states,
+                        pos_tensor,
+                    )
+
+                # Keep recurrent state in independently owned storage. This is
+                # cheap for ESA's compact state and also protects against future
+                # compiler backends that may reuse output buffers.
                 states = (
                     states_out.clone()
                     if states_out.is_cuda
