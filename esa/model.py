@@ -684,36 +684,27 @@ class ESAModel(nn.Module):
 
         return logits, states_out
 
+    
+
+
+
     def compile_generation(
         self,
         *,
         mode: str = "reduce-overhead",
         fullgraph: bool = False,
     ) -> "ESAModel":
-        """Compile the fixed-shape ESA-Lightning decode step.
+        """Compile the fixed-shape ESA-Lightning decode step."""
 
-        Lightning decode carries recurrent ESA state from one invocation into
-        the next. PyTorch ``reduce-overhead`` normally enables CUDA Graphs, but
-        CUDA-graph-managed output storage is a poor fit for this recurrent
-        state handoff on some PyTorch/CUDA combinations. Keep TorchInductor
-        compilation enabled while explicitly disabling CUDA Graph capture for
-        the runtime step.
-        """
-        if not hasattr(torch, "compile") or self.device.type != "cuda":
+        if (
+            not hasattr(torch, "compile")
+            or self.device.type != "cuda"
+        ):
             return self
 
-        # PyTorch 2.10 does not allow passing both ``mode=...`` and
-        # ``options=...`` to ``torch.compile``. Keep ``mode`` in the cache key
-        # for API compatibility, while configuring the recurrent runtime with
-        # explicit compiler options only.
-        #
-        # CUDA Graphs are intentionally disabled because Lightning carries ESA
-        # state from one invocation into the next.
-        cudagraphs = False
         key = (
             mode,
             bool(fullgraph),
-            cudagraphs,
         )
 
         if (
@@ -725,22 +716,26 @@ class ESAModel(nn.Module):
         try:
             self._compiled_lightning_step = torch.compile(
                 self.lightning_step,
+                mode=mode,
                 fullgraph=fullgraph,
                 dynamic=False,
-                options={
-                    "triton.cudagraphs": cudagraphs,
-                },
             )
+
             self._compiled_lightning_key = key
+
         except Exception as exc:
             self._compiled_lightning_step = None
             self._compiled_lightning_key = None
+
             self._warn_compile_fallback(
                 "runtime",
                 exc,
             )
 
         return self
+
+
+
 
     @torch.inference_mode()
     def generate(
@@ -864,7 +859,7 @@ class ESAModel(nn.Module):
                 key = (
                     compile_mode,
                     False,
-                    False,  # runtime CUDA Graphs are intentionally disabled
+                   
                 )
 
                 if (
@@ -991,6 +986,8 @@ class ESAModel(nn.Module):
             return sequences
         finally:
             self.train(was_training)
+
+
 
     @torch.inference_mode()
     def generate_ids(
