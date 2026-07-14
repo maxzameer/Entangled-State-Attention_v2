@@ -14,18 +14,21 @@ class TinyTokenizer:
         return " ".join(str(int(i)) for i in ids)
 
 
-def make_model() -> ESAModel:
+def make_model(
+    device: str = "cpu",
+):
     return ESAModel(
         ESAModelConfig(
             vocab_size=32,
             block=32,
-            n_layer=1,
-            head=2,
-            embd=16,
+            n_layer=2,
+            head=4,
+            embd=32,
             dropout=0.0,
-            training_compile=False,
-        )
-    ).eval()
+            precision="fp32",
+        ),
+        device=device,
+    )
 
 
 def test_optimized_model_defaults():
@@ -49,11 +52,31 @@ def test_engine_parser():
 
 def test_prefill_state_equivalence_cpu():
     torch.manual_seed(1)
-    model = make_model()
-    ids = torch.randint(0, 32, (1, 9))
-    _, thunder_state, _ = model.prefill(ids, engine="thunder_16")
-    _, lightning_state, _ = model.prefill(ids, engine="lightning")
-    assert torch.allclose(thunder_state, lightning_state, atol=2e-4, rtol=2e-4)
+
+    model = make_model(
+        device="cpu",
+    )
+
+    ids = torch.randint(
+        0,
+        32,
+        (1, 9),
+    )
+
+    _, thunder_state, _ = model.prefill(
+        ids,
+        engine="thunder_16",
+    )
+
+    _, lightning_state, _ = model.prefill(
+        ids,
+        engine="lightning",
+    )
+
+    torch.testing.assert_close(
+        thunder_state,
+        lightning_state,
+    )
 
 
 def test_seek_and_backward_compatibility():

@@ -10,9 +10,12 @@ from pathlib import Path
 import time
 from typing import Any
 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import importlib.util
+import warnings
 
 from .generation import (
     GenerationResult,
@@ -21,6 +24,35 @@ from .generation import (
     parse_engine_spec,
 )
 from .layer import ESA
+
+def available_devices():
+    """
+    Return all devices supported by ESA.
+    """
+
+    return {
+        "cpu": True,
+        "cuda": torch.cuda.is_available(),
+        "mps": (
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        ),
+        "xla": importlib.util.find_spec("torch_xla") is not None,
+        "npu": importlib.util.find_spec("torch_npu") is not None,
+    }
+
+
+def print_available_devices():
+    devices = available_devices()
+
+    print("\nAvailable Devices")
+    print("-----------------------------")
+
+    for name, enabled in devices.items():
+        print(f"{'✓' if enabled else '✗'} {name}")
+
+    if devices["cuda"]:
+        print(f"\nCUDA GPU : {torch.cuda.get_device_name(0)}")
 
 
 @dataclass
@@ -225,6 +257,8 @@ class ESAModel(nn.Module):
     def __init__(
         self,
         config: ESAModelConfig | None = None,
+        *,
+        device: str = "cuda",
         **kwargs: Any,
     ):
         super().__init__()
@@ -239,6 +273,65 @@ class ESAModel(nn.Module):
             )
 
         self.config = config
+
+        # ==========================================================
+        # Device selection
+        # ==========================================================
+
+        device_name = str(device).lower()
+
+        if device_name == "cuda":
+            if torch.cuda.is_available():
+                target_device = torch.device("cuda")
+            else:
+                import warnings
+
+                warnings.warn(
+                    "CUDA requested but not available. Falling back to CPU.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                target_device = torch.device("cpu")
+
+        elif device_name == "cpu":
+            target_device = torch.device("cpu")
+
+        elif device_name == "mps":
+            if (
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            ):
+                target_device = torch.device("mps")
+            else:
+                raise RuntimeError(
+                    "MPS requested but Apple MPS is not available."
+                )
+
+        elif device_name in {"tpu", "xla"}:
+            try:
+                import torch_xla.core.xla_model as xm
+            except ImportError as exc:
+                raise RuntimeError(
+                    "TPU/XLA requested but torch_xla is not installed."
+                ) from exc
+
+            target_device = xm.xla_device()
+
+        elif device_name == "npu":
+            try:
+                import torch_npu  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError(
+                    "NPU requested but torch_npu is not installed."
+                ) from exc
+
+            target_device = torch.device("npu")
+
+        else:
+            raise ValueError(
+                f"Unsupported ESA device: {device!r}. "
+                "Choose from: 'cuda', 'cpu', 'mps', 'tpu', 'xla', or 'npu'."
+            )
 
         self.wte = nn.Embedding(
             config.vocab_size,
@@ -307,6 +400,12 @@ class ESAModel(nn.Module):
         self._compiled_training_key = None
         self._training_compile_failed = False
         self._compile_warnings_emitted: set[str] = set()
+        self.to(target_device)
+
+
+
+
+
     def _init_weights(
         self,
         module: nn.Module,
