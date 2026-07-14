@@ -603,8 +603,13 @@ class ESAModel(nn.Module):
         if not hasattr(torch, "compile") or self.device.type != "cuda":
             return self
 
-        # Include the CUDA-graph policy in the cache key so future runtime
-        # policies cannot accidentally reuse an incompatible compiled callable.
+        # PyTorch 2.10 does not allow passing both ``mode=...`` and
+        # ``options=...`` to ``torch.compile``. Keep ``mode`` in the cache key
+        # for API compatibility, while configuring the recurrent runtime with
+        # explicit compiler options only.
+        #
+        # CUDA Graphs are intentionally disabled because Lightning carries ESA
+        # state from one invocation into the next.
         cudagraphs = False
         key = (
             mode,
@@ -621,7 +626,6 @@ class ESAModel(nn.Module):
         try:
             self._compiled_lightning_step = torch.compile(
                 self.lightning_step,
-                mode=mode,
                 fullgraph=fullgraph,
                 dynamic=False,
                 options={
