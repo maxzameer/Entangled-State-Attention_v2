@@ -15,8 +15,8 @@ class ESA(nn.Module):
         embd, head, batch, block, compass
 
     Backend defaults:
-        flare      -> default backend, no compass
-        thunder    -> compass=16
+        thunder    -> default backend, compass=16
+        flare      -> no compass
         pulse      -> no compass
     """
 
