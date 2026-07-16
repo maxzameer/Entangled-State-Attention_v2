@@ -1244,6 +1244,105 @@ Release validation confirmed exact save/load output equivalence and exact checkp
 
 ---
 
+
+<!-- ESA_COMPILE_MODE_GUIDE_START -->
+# Compile modes
+
+ESA keeps compilation enabled by default using PyTorch's standard `default`
+compile mode. This provides strong acceleration while prioritizing stability
+and compatibility.
+
+## Default behavior
+
+Training:
+
+```python
+config = ESAModelConfig(
+    vocab_size=50257,
+    training_compile=True,
+    training_compile_mode="default",
+)
+```
+
+Generation:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    compile=True,
+)
+```
+
+Equivalent explicit generation configuration:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    compile=True,
+    compile_mode="default",
+)
+```
+
+## Optimum performance
+
+For optimum CUDA performance, manually enable `reduce-overhead` after
+validating the exact model, device, batch size, tensor shapes, recurrent
+state, and memory budget used by the application.
+
+### Generation
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    compile=True,
+    compile_mode="reduce-overhead",
+)
+```
+
+### Training
+
+```python
+config = ESAModelConfig(
+    vocab_size=50257,
+    training_compile=True,
+    training_compile_mode="reduce-overhead",
+)
+```
+
+### Compiled prefill
+
+```python
+logits, states, position = model.prefill(
+    input_ids,
+    engine="thunder_compiled_16",
+    compile_mode="reduce-overhead",
+    fullgraph=False,
+    dynamic=True,
+)
+```
+
+### Compile the recurrent decode step directly
+
+```python
+model.compile_generation(
+    mode="reduce-overhead",
+    fullgraph=False,
+)
+```
+
+> **Recommendation:** use the default compile mode for general applications.
+> Manually enable `reduce-overhead` when maximum CUDA performance is required
+> and the exact workload has been tested for stability.
+<!-- ESA_COMPILE_MODE_GUIDE_END -->
+
+---
+
 # Research status
 
 ESA v2.1.1 is research software.

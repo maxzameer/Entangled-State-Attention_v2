@@ -68,7 +68,7 @@ class ESAModelConfig:
     precision: str = "fp16"
     compass: int | None = None
     training_compile: bool = True
-    training_compile_mode: str = "reduce-overhead"
+    training_compile_mode: str = "default"
     training_compile_fullgraph: bool = False
     gate_min: float = 0.80
     gate_max: float = 0.995
@@ -588,7 +588,7 @@ class ESAModel(nn.Module):
         input_ids: torch.Tensor,
         *,
         engine: str = "thunder_compiled_16",
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "default",
         fullgraph: bool = False,
         dynamic: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
@@ -760,7 +760,7 @@ class ESAModel(nn.Module):
     def compile_generation(
         self,
         *,
-        mode: str = "reduce-overhead",
+        mode: str = "default",
         fullgraph: bool = False,
     ) -> "ESAModel":
         """
@@ -879,7 +879,7 @@ class ESAModel(nn.Module):
         eos_token_id: int | None = None,
         seed: int | None = None,
         compile: bool = True,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "default",
         progress_interval: int | None = None,
         stats: bool = False,
         max_new_tokens: int | None = None,
