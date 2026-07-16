@@ -86,6 +86,7 @@ class Trainer:
         protected: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> Path:
+        """Save a complete training checkpoint."""
         step = int(self.state.step if step is None else step)
         name = name or f"step_{step:06d}"
         path = self.checkpoint_dir / name
@@ -105,6 +106,7 @@ class Trainer:
         return path
 
     def maybe_save(self, *, step: int, val_loss: float | None = None) -> list[Path]:
+        """Apply the configured checkpoint policy for the current training step."""
         self.state.step = int(step)
         saved: list[Path] = []
 
@@ -127,6 +129,7 @@ class Trainer:
         return saved
 
     def save_final(self) -> Path | None:
+        """Save the final training checkpoint."""
         if not self.save_last:
             return None
         return self.save_checkpoint(step=self.state.step, name="last", protected=True)
@@ -160,6 +163,7 @@ class Trainer:
         device: str | torch.device | None = None,
         restore_rng: bool = True,
     ) -> "Trainer":
+        """Load a checkpoint into the model and available training-state objects."""
         path = Path(path)
         if device is None:
             device = self.model.device
@@ -187,6 +191,7 @@ class Trainer:
         *,
         device: str | torch.device | None = None,
     ) -> "Trainer":
+        """Resume training from a named or explicit checkpoint."""
         value = str(value)
         if value in {"latest", "last"}:
             path = self.checkpoint_dir / "last"

@@ -26,6 +26,7 @@ class GenerationStats:
     state_mb: float
 
     def to_dict(self) -> dict[str, Any]:
+        """Return generation statistics as a JSON-serializable dictionary."""
         return asdict(self)
 
 

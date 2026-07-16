@@ -81,6 +81,7 @@ class ESAModelConfig:
         cls,
         data: dict[str, Any],
     ) -> "ESAModelConfig":
+        """Construct a model configuration from serialized dictionary values."""
         allowed = cls.__dataclass_fields__.keys()
         return cls(
             **{
@@ -599,8 +600,7 @@ class ESAModel(nn.Module):
             - dynamic prompt lengths
             - CUDA Graphs disabled
 
-        Lightning decode is compiled separately using the fast
-        reduce-overhead path.
+        Lightning decode is compiled separately using the selected compile mode. The default prioritizes stability, while reduce-overhead remains an explicit optimum-speed option.
         """
 
         spec = parse_engine_spec(
@@ -723,6 +723,7 @@ class ESAModel(nn.Module):
         torch.Tensor,
         torch.Tensor,
     ]:
+        """Run one recurrent ESA-Lightning decoding step."""
         x = (
             self.wte(token)
             + self.wpe(pos_tensor)[None, :]
@@ -767,7 +768,7 @@ class ESAModel(nn.Module):
         Compile the fixed-shape ESA-Lightning decode step.
 
         Lightning decode always processes one token at a time, so its input shape
-        is stable. Keep the fast reduce-overhead compilation strategy used by
+        is stable. Use the selected compile mode. The public default prioritizes stability; reduce-overhead remains an explicit optimum-speed option. used by
         ESA v2.1.0.
 
         Prefill and decode intentionally use different compilation policies:
@@ -1132,6 +1133,7 @@ class ESAModel(nn.Module):
     def model_info(
         self,
     ) -> dict[str, Any]:
+        """Return architecture, parameter, device, and runtime information."""
         return {
             **asdict(
                 self.config
@@ -1155,6 +1157,7 @@ class ESAModel(nn.Module):
         *,
         metadata: dict[str, Any] | None = None,
     ) -> Path:
+        """Save the configuration, weights, and optional metadata to a model directory."""
         path = Path(path)
         path.mkdir(
             parents=True,
@@ -1219,6 +1222,7 @@ class ESAModel(nn.Module):
         device: str | torch.device = "cpu",
         strict: bool = True,
     ) -> "ESAModel":
+        """Load an ESA model directory and restore its configuration and weights."""
         path = Path(path)
 
         config = ESAModelConfig.from_dict(

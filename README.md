@@ -42,7 +42,7 @@ ESA v2.1.1 uses optimized defaults for the common path:
 * **Default generation prefill:** `thunder_16`
 * **Default autoregressive runtime:** ESA-Lightning
 * **Optional compiled prefill:** `thunder_compiled_16`
-* **Optional training compilation:** `torch.compile(..., mode="reduce-overhead", fullgraph=False)`
+* **Default training compilation:** `torch.compile(..., mode="default", fullgraph=False)`
 
 Normal text generation is intentionally simple:
 
@@ -444,7 +444,7 @@ The default model configuration includes:
 
 ```text
 training_compile           True
-training_compile_mode      reduce-overhead
+training_compile_mode      default
 training_compile_fullgraph False
 ```
 
@@ -673,7 +673,8 @@ Prefill
 
 Decode
     fixed one-token shape
-    reduce-overhead compilation
+    default compilation for general use
+    reduce-overhead available manually for optimum speed
 ```
 
 ---

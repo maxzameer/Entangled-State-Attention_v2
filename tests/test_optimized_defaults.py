@@ -38,7 +38,7 @@ def test_optimized_model_defaults():
     assert cfg.training_compile is True
     model = ESAModel(cfg)
     assert model.blocks[0].esa.compass == 16
-    assert cfg.training_compile_mode == "reduce-overhead"
+    assert cfg.training_compile_mode == "default"
 
 
 def test_engine_parser():

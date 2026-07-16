@@ -36,7 +36,7 @@ class ESA(nn.Module):
         eps: float = 1e-5,
         device: str | torch.device | None = "auto",
         auto_compile: bool = False,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "default",
         auto_move_input: bool = True,
         strict_checks: bool = False,
     ):
@@ -138,7 +138,8 @@ class ESA(nn.Module):
         if auto_compile:
             self.compile(mode=compile_mode)
 
-    def compile(self, mode: str = "reduce-overhead"):
+    def compile(self, mode: str = "default"):
+        """Compile this ESA layer with torch.compile and return the compiled module."""
         try:
             self.layer = torch.compile(self.layer, mode=mode, fullgraph=False)
             self.compiled = True
@@ -181,6 +182,7 @@ class ESA(nn.Module):
         dtype: torch.dtype | None = None,
         layout: str = "heads",
     ) -> torch.Tensor:
+        """Create an initial recurrent state for the requested batch, device, and dtype."""
         from .generation import lightning_init_state
         return lightning_init_state(
             self,
@@ -199,6 +201,7 @@ class ESA(nn.Module):
         backend: str | None = None,
         compass: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Process a full sequence and return its outputs and final recurrent state."""
         from .generation import esa_prefill
 
         return esa_prefill(
@@ -214,6 +217,7 @@ class ESA(nn.Module):
         x: torch.Tensor,
         state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Advance the recurrent state by one token and return the output and next state."""
         from .generation import lightning_decode_step
         return lightning_decode_step(self, x, state)
 
