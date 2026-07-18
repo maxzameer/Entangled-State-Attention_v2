@@ -4,6 +4,7 @@ import torch
 
 from esa.generation import parse_engine_spec
 from esa.model import ESAModel, ESAModelConfig
+from esa import ESAConfig
 
 
 class TinyTokenizer:
@@ -103,3 +104,46 @@ def test_raw_text_generate_api():
         temperature=0.0,
     )
     assert isinstance(text, str)
+
+def test_esa_config_uses_optimized_defaults():
+    config = ESAConfig(embd=64)
+
+    assert config.backend == "thunder"
+    assert config.compass == 16
+    assert config.precision == "fp16"
+
+
+def test_explicit_thunder_uses_default_compass():
+    config = ESAConfig(
+        embd=64,
+        backend="thunder",
+    )
+
+    assert config.backend == "thunder"
+    assert config.compass == 16
+
+
+def test_non_thunder_backends_do_not_use_compass():
+    pulse = ESAConfig(
+        embd=64,
+        backend="pulse",
+    )
+
+    flare = ESAConfig(
+        embd=64,
+        backend="flare",
+    )
+
+    assert pulse.compass is None
+    assert flare.compass is None
+
+
+def test_explicit_thunder_compass_is_preserved():
+    config = ESAConfig(
+        embd=64,
+        backend="thunder",
+        compass=32,
+    )
+
+    assert config.backend == "thunder"
+    assert config.compass == 32
