@@ -31,5 +31,5 @@ result = compass(
 print(result)
 print(result.summary())
 
-layer = ESA(n_embd=128, n_head=4, backend="thunder", c=result.recommended)
+layer = ESA(embd=128, head=4, backend="thunder", compass=result.recommended)
 print(layer)

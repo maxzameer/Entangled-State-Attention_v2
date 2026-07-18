@@ -29,9 +29,11 @@ class CompassResult:
     recommendation: str
 
     def summary(self) -> str:
+        """Return a concise human-readable summary of this compass evaluation."""
         return self.recommendation
 
     def to_dataframe(self):
+        """Return the evaluated compass rows as a pandas DataFrame."""
         try:
             import pandas as pd
         except Exception as exc:  # pragma: no cover
@@ -39,6 +41,7 @@ class CompassResult:
         return pd.DataFrame(self.rows)
 
     def to_dict(self) -> dict[str, Any]:
+        """Return this compass result as a JSON-serializable dictionary."""
         return {
             "recommended": self.recommended,
             "best_quality": self.best_quality,

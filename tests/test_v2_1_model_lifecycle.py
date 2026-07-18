@@ -122,7 +122,8 @@ def test_model_save_load_roundtrip(
     )
 
     model = ESAModel(
-        cfg
+    cfg,
+    device="cpu",
     )
 
     model.eval()

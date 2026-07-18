@@ -9,7 +9,7 @@ import torch
 from esa import ESA
 
 
-def test_default_backend_is_flare():
+def test_default_backend_is_thunder():
     signature = inspect.signature(
         ESA
     )
@@ -18,7 +18,7 @@ def test_default_backend_is_flare():
         signature.parameters[
             "backend"
         ].default
-        == "flare"
+        == "thunder"
     )
 
 

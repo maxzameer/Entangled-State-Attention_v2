@@ -1,6 +1,6 @@
-# Entangled State Attention v2.1
+# Entangled State Attention v2.1.1
 
-**Entangled State Attention (ESA)** is a state-based causal sequence modeling architecture for efficient training and recurrent text generation.
+**Entangled State Attention (ESA)** is a state-based causal sequence modeling architecture for efficient full-sequence training and recurrent text generation.
 
 Instead of constructing an explicit token-to-token attention score matrix, ESA updates a causal state through the recurrence
 
@@ -8,59 +8,132 @@ $$
 E_t = A_t \odot E_{t-1} + B_t
 $$
 
-ESA v2.1 provides both a reusable sequence layer and a complete causal language model.
-
-## ESA v2.1 at a glance
-
-- `ESA` — reusable PyTorch sequence layer
-- `Flare` — default high-performance training backend
-- `Thunder` — optimized alternative backend
-- `Pulse` — reference backend for correctness and comparison
-- `ESAModel` — complete causal language model built from ESA layers
-- `ESA-Lightning` — recurrent generation engine used by `model.generate()`
-- `Trainer` — checkpointing and exact training resume
-- `compass()` — utility for selecting practical Thunder scan settings
-- `thunderBoost()` — optional compile and warmup utility
-
-> **Important:** ESA-Lightning is a generation engine, not a selectable training backend.  
-> Public training backends are `flare`, `thunder`, and `pulse`.
+ESA v2.1.1 provides both a reusable PyTorch sequence layer and a complete causal language model.
 
 ---
 
-## Installation
+## ESA v2.1.1 at a glance
 
-### Install ESA v2.1 from the update branch
+* `ESA` — reusable PyTorch sequence-mixing layer
+* `Thunder C16` — default ESA backend
+* `Thunder` — optimized associative scan backend with configurable `compass`
+* `Pulse` — reference backend for correctness and comparison
+* `Flare` — alternative full-sequence backend
+* `ESAModel` — complete causal language model built from ESA layers
+* `ESA-Lightning` — recurrent generation engine
+* `Trainer` — checkpoint management and exact training resume
+* `compass()` — utility for selecting practical Thunder scan settings
+* `thunderBoost()` — optional compile and warmup utility
 
-```bash
-pip install --no-cache-dir git+https://github.com/maxzameer/Entangled-State-Attention_v2.git@main
+> **Important:** ESA-Lightning is a generation runtime, not a selectable public training backend.
+>
+> Public ESA backends are `thunder`, `pulse`, and `flare`.
+
+---
+
+# Optimized defaults
+
+ESA v2.1.1 uses optimized defaults for the common path:
+
+* **Default ESA backend:** Thunder
+* **Default Thunder compass:** `16`
+* **Default model backend:** Thunder
+* **Default training precision mode:** `fp16`
+* **Default generation prefill:** `thunder_16`
+* **Default autoregressive runtime:** ESA-Lightning
+* **Optional compiled prefill:** `thunder_compiled_16`
+* **Default training compilation:** `torch.compile(..., mode="default", fullgraph=False)`
+
+Normal text generation is intentionally simple:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+)
 ```
 
-### Local development install
+Advanced users can select a different prefill engine:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    prefill="thunder_compiled_32",
+    runtime="lightning",
+)
+```
+
+`max_new_tokens` remains accepted as a backward-compatible alias for `seek`.
+
+---
+
+# Installation
+
+## Requirements
+
+```text
+Python >= 3.10
+PyTorch >= 2.1
+```
+
+The Python package is imported as:
+
+```python
+import esa
+```
+
+The distribution name is:
+
+```text
+entangled-state-attention
+```
+
+---
+
+## Install ESA v2.1.1 from the GitHub test branch
+
+```bash
+pip install --no-cache-dir git+https://github.com/maxzameer/Entangled-State-Attention_v2.git@test/v2.1.1
+```
+
+---
+
+## Local development install
 
 ```bash
 git clone https://github.com/maxzameer/Entangled-State-Attention_v2.git
 cd Entangled-State-Attention_v2
-git checkout esa-v2.1-update
+git checkout test/v2.1.1
 pip install -e .
 ```
 
-### With optional Triton dependency
+---
+
+## PyPI installation
+
+After ESA v2.1.1 is published to PyPI:
 
 ```bash
-pip install -e .[triton]
+pip install entangled-state-attention==2.1.1
 ```
 
-Package version:
+---
+
+## Check the installed version
 
 ```python
 import esa
+
 print(esa.__version__)
 ```
 
 Expected:
 
 ```text
-2.1.0
+2.1.1
 ```
 
 ---
@@ -78,11 +151,18 @@ layer = ESA(
     head=4,
     batch=16,
     block=1024,
-    backend="flare",
+    backend="thunder",
+    compass=16,
     precision="fp16",
 )
 
-x = torch.randn(16, 1024, 128, device="cuda")
+x = torch.randn(
+    16,
+    1024,
+    128,
+    device="cuda",
+)
+
 y = layer(x)
 
 print(y.shape)
@@ -97,38 +177,37 @@ torch.Size([16, 1024, 128])
 ## Main arguments
 
 ```text
-embd       embedding dimension
-head       number of ESA heads
-batch      expected batch size
-block      expected sequence length
-backend    "flare", "thunder", or "pulse"
-precision  scan precision mode
-compass    optional Thunder scan setting
+embd          embedding dimension
+head          number of ESA heads
+batch         optional expected batch size
+block         optional expected sequence length
+backend       "thunder", "pulse", or "flare"
+precision     backend precision mode
+compass       optional Thunder scan setting
+dropout       dropout probability
+device        "auto", "cpu", "cuda", or torch.device
+auto_compile  optionally compile the layer
 ```
+
+The canonical v2.1.1 public names are:
+
+```text
+embd
+head
+batch
+block
+compass
+```
+
+Old constructor names such as `n_embd`, `n_head`, and `c` are not part of the public `ESA` API.
 
 ---
 
 # 2. Backends
 
-## Flare — default backend
+## Thunder C16 — default backend
 
-Flare is the default ESA v2.1 training backend.
-
-```python
-from esa import ESA
-
-layer = ESA(
-    embd=128,
-    head=4,
-    block=1024,
-    backend="flare",
-    precision="fp16",
-)
-```
-
-Flare is intended for high-performance GPU training.
-
-## Thunder — optimized alternative
+Thunder with `compass=16` is the default public ESA backend.
 
 ```python
 from esa import ESA
@@ -136,25 +215,36 @@ from esa import ESA
 layer = ESA(
     embd=128,
     head=4,
-    block=1024,
-    backend="thunder",
-    precision="fp16",
 )
 ```
 
-Thunder supports the `compass` scan setting:
+This is equivalent to the default backend configuration:
 
 ```python
 layer = ESA(
     embd=128,
     head=4,
-    block=1024,
     backend="thunder",
     compass=16,
 )
 ```
 
-Most users do not need to choose a `compass` value manually.
+Thunder is the optimized associative scan backend and supports configurable `compass` values.
+
+Example:
+
+```python
+layer = ESA(
+    embd=128,
+    head=4,
+    backend="thunder",
+    compass=32,
+)
+```
+
+Most users can keep the default `compass=16`.
+
+---
 
 ## Pulse — reference backend
 
@@ -164,43 +254,97 @@ from esa import ESA
 layer = ESA(
     embd=128,
     head=4,
-    block=1024,
     backend="pulse",
 )
 ```
 
 Pulse is useful for:
 
-- correctness checks
-- debugging
-- backend comparisons
-- research validation
+* correctness checks
+* debugging
+* backend comparisons
+* recurrent equivalence tests
+* research validation
+
+`compass` is not supported for Pulse.
 
 ---
 
-# 3. Precision
+## Flare — alternative full-sequence backend
 
-Default precision:
+```python
+from esa import ESA
+
+layer = ESA(
+    embd=128,
+    head=4,
+    backend="flare",
+)
+```
+
+Flare is available as an alternative full-sequence ESA backend.
+
+`compass` is not supported for Flare.
+
+---
+
+# 3. Precision and mixed precision
+
+The public default precision mode is:
 
 ```python
 precision="fp16"
 ```
 
-Supported precision modes:
+Supported precision modes may include:
 
 ```text
-fp16  default training mode
-bf16  optional mixed-precision mode
-fp32  stability and debugging mode
-fp64  high-precision reference mode
-fp8   experimental mode
+fp16
+bf16
+fp32
+fp64
+fp8
 ```
+
+Availability and behavior can depend on the selected backend and hardware.
+
+## Recommended CUDA mixed-precision usage
+
+ESA parameters can remain in FP32 while CUDA AMP performs mixed-precision computation.
+
+```python
+import torch
+from esa import ESA
+
+layer = ESA(
+    embd=128,
+    head=4,
+    backend="thunder",
+    precision="fp16",
+    device="cuda",
+)
+
+x = torch.randn(
+    8,
+    512,
+    128,
+    device="cuda",
+)
+
+with torch.autocast(
+    device_type="cuda",
+    dtype=torch.float16,
+):
+    y = layer(x)
+```
+
+For direct layer usage, do not manually pass FP16 tensors to FP32 module weights outside an autocast context.
 
 ---
 
 # 4. Complete ESA language model
 
-ESA v2.1 includes `ESAModel`, a complete causal language model built directly from ESA layers.
+ESA v2.1.1 includes `ESAModel`, a complete causal language model built from ESA layers.
 
 ```python
 from esa import ESAModel, ESAModelConfig
@@ -212,23 +356,28 @@ config = ESAModelConfig(
     head=6,
     embd=384,
     dropout=0.1,
-    backend="flare",
+    backend="thunder",
     precision="fp16",
+    compass=16,
 )
 
-model = ESAModel(config).cuda()
+model = ESAModel(
+    config,
+    device="cuda",
+)
 ```
 
 The default `ESAModelConfig` architecture values are:
 
 ```text
-block      512
-n_layer    6
-head       6
-embd       384
-dropout    0.1
-backend    flare
-precision  fp16
+block          512
+n_layer        6
+head           6
+embd           384
+dropout        0.1
+backend        thunder
+precision      fp16
+compass        backend default
 ```
 
 A model can also be created directly with keyword arguments:
@@ -242,96 +391,244 @@ model = ESAModel(
     n_layer=6,
     head=6,
     embd=384,
-    backend="flare",
+    backend="thunder",
     precision="fp16",
+    compass=16,
+    device="cuda",
 )
-```
-
-## Forward pass
-
-```python
-logits, loss = model(input_ids, targets)
-```
-
-For inference without targets:
-
-```python
-logits, loss = model(input_ids)
 ```
 
 ---
 
-# 5. Text generation with ESA-Lightning
+## Forward pass
 
-`ESAModel.generate()` is the public generation API.
+Training with targets:
 
-ESA-Lightning performs recurrent generation using ESA state instead of building an attention KV cache.
+```python
+logits, loss = model(
+    input_ids,
+    targets,
+)
+```
+
+Inference without targets:
+
+```python
+logits, loss = model(
+    input_ids,
+)
+```
+
+The returned `loss` is `None` when targets are not provided.
+
+---
+
+# 5. Training compilation
+
+`ESAModel` can compile the full training forward path:
+
+```python
+model.compile_training()
+```
+
+Or configure it explicitly:
+
+```python
+model.compile_training(
+    mode="reduce-overhead",
+    fullgraph=False,
+)
+```
+
+The default model configuration includes:
+
+```text
+training_compile           True
+training_compile_mode      default
+training_compile_fullgraph False
+```
+
+Compilation behavior depends on the platform, PyTorch version, and available accelerator.
+
+---
+
+# 6. Text generation with ESA-Lightning
+
+`ESAModel.generate()` is the main public generation API.
+
+ESA-Lightning performs recurrent generation using ESA state instead of maintaining an attention KV cache.
 
 ```python
 text = model.generate(
-    prompt="Entangled State Attention is",
+    "Entangled State Attention is",
     tokenizer=tokenizer,
-    max_new_tokens=256,
+    seek=256,
     temperature=0.8,
     top_k=50,
 )
 ```
 
-You can also generate directly from token IDs:
+The prompt can be passed positionally:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+)
+```
+
+Or explicitly:
+
+```python
+text = model.generate(
+    prompt="Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+)
+```
+
+---
+
+## Generate from token IDs
 
 ```python
 output_ids = model.generate(
     input_ids=input_ids,
-    max_new_tokens=256,
+    seek=256,
     temperature=0.8,
     top_k=50,
 )
 ```
 
+Advanced token-level generation is also available through:
+
+```python
+output_ids = model.generate_ids(
+    input_ids,
+    seek=256,
+)
+```
+
+---
+
 ## Generation arguments
 
 ```text
-input_ids        optional token tensor
-prompt           optional text prompt
-tokenizer        tokenizer used with prompt=
-max_new_tokens   number of tokens to generate
-temperature      sampling temperature
-top_k            optional top-k sampling
-top_p            optional nucleus sampling
-eos_token_id     optional early-stop token
-seed             optional sampling seed
-compile          compile recurrent generation step
-compile_mode     torch.compile mode
-progress_every   optional progress interval
-return_result    return detailed GenerationResult
+prompt             optional raw-text prompt
+tokenizer          tokenizer used for raw-text generation
+input_ids          optional token tensor
+seek               number of tokens to generate
+prefill            prefill execution engine
+runtime            autoregressive runtime
+temperature        sampling temperature
+top_k              optional top-k sampling
+top_p              optional nucleus sampling
+eos_token_id       optional early-stop token
+seed               optional random seed
+compile            compile recurrent decode
+compile_mode       torch.compile mode
+progress_interval  optional progress reporting interval
+stats              return GenerationResult with statistics
+max_new_tokens     backward-compatible alias for seek
 ```
 
-Example with detailed statistics:
+---
+
+## Detailed generation statistics
+
+Set:
+
+```python
+stats=True
+```
+
+Example:
 
 ```python
 result = model.generate(
-    prompt="The future of efficient language models",
+    "The future of efficient language models",
     tokenizer=tokenizer,
-    max_new_tokens=512,
-    return_result=True,
+    seek=512,
+    stats=True,
 )
 
 print(result.text)
+print(result.generated_ids)
 print(result.stats)
 ```
 
-## ESA-Lightning low-level interface
+`GenerationStats` includes information such as:
 
-Advanced deployment and export workflows can use:
-
-```python
-logits, states, position = model.lightning_prefill(input_ids)
-logits, next_states = model.lightning_step(token, states, pos_tensor)
+```text
+prompt_tokens
+prefill_tokens
+generated_tokens
+decode_steps
+prefill_seconds
+decode_seconds
+decode_tok_s
+total_seconds
+state_bytes
+state_mb
 ```
 
-These methods are useful for recurrent inference and deployment targets such as ExecuTorch.
+---
 
-For normal text generation, use:
+# 7. Prefill and ESA-Lightning decode
+
+The optimized generation path separates prompt prefill from recurrent one-token decoding.
+
+## Prefill
+
+```python
+logits, states, position = model.prefill(
+    input_ids,
+    engine="thunder_16",
+)
+```
+
+Compiled Thunder prefill:
+
+```python
+logits, states, position = model.prefill(
+    input_ids,
+    engine="thunder_compiled_16",
+    compile_mode="reduce-overhead",
+    fullgraph=False,
+    dynamic=True,
+)
+```
+
+---
+
+## Recurrent decode step
+
+```python
+logits, next_states = model.lightning_step(
+    token,
+    states,
+    pos_tensor,
+)
+```
+
+The state shape is independent of the full prompt length and is updated recurrently during decoding.
+
+---
+
+## Backward-compatible prefill
+
+The following interface is also available:
+
+```python
+logits, states, position = model.lightning_prefill(
+    input_ids
+)
+```
+
+This uses the model's configured backend.
+
+For normal user-facing generation, prefer:
 
 ```python
 model.generate(...)
@@ -339,9 +636,9 @@ model.generate(...)
 
 ---
 
-# 6. Compile generation
+# 8. Compile generation
 
-The ESA-Lightning recurrent decode step can be compiled:
+The fixed-shape ESA-Lightning one-token decode step can be compiled:
 
 ```python
 model.compile_generation()
@@ -356,28 +653,43 @@ model.compile_generation(
 )
 ```
 
-`model.generate()` can also compile the generation path automatically:
+Generation can also compile the recurrent path automatically:
 
 ```python
 text = model.generate(
-    prompt="Once upon a time",
+    "Once upon a time",
     tokenizer=tokenizer,
-    max_new_tokens=256,
+    seek=256,
     compile=True,
 )
 ```
 
+Prefill and decode intentionally use different compilation strategies:
+
+```text
+Prefill
+    dynamic prompt length
+    dynamic compilation support
+
+Decode
+    fixed one-token shape
+    default compilation for general use
+    reduce-overhead available manually for optimum speed
+```
+
 ---
 
-# 7. Save a trained model
+# 9. Save a trained model
 
 Use the model lifecycle API:
 
 ```python
-model.save("my_esa_model")
+model.save(
+    "my_esa_model"
+)
 ```
 
-The saved directory contains:
+The saved path is a model directory containing files such as:
 
 ```text
 my_esa_model/
@@ -386,7 +698,7 @@ my_esa_model/
 └── metadata.json
 ```
 
-You can include custom metadata:
+Custom metadata can be included:
 
 ```python
 model.save(
@@ -399,20 +711,21 @@ model.save(
 )
 ```
 
-`metadata.json` records information such as:
+`metadata.json` can contain information such as:
 
 ```text
-architecture       ESAModel
-generation_engine  ESA-Lightning
-backend            model training backend
-format_version     model format version
+architecture
+generation_engine
+backend
+format_version
+custom user metadata
 ```
 
 ---
 
-# 8. Load a saved model
+# 10. Load a saved model
 
-Load the model directory, not the individual `.pt` file:
+Load the model directory:
 
 ```python
 from esa import ESAModel
@@ -422,15 +735,6 @@ model = ESAModel.load(
     device="cuda",
 )
 ```
-
-The loader reconstructs the model from:
-
-```text
-config.json
-model.pt
-```
-
-`metadata.json` is informational and is not required to reconstruct the model.
 
 Strict loading is enabled by default:
 
@@ -442,11 +746,14 @@ model = ESAModel.load(
 )
 ```
 
+The loader reconstructs the model configuration and restores the model state.
+
 ---
 
-# 9. Continue training a loaded model
+# 11. Continue training a loaded model
 
 ```python
+import torch
 from esa import ESAModel
 
 model = ESAModel.load(
@@ -462,25 +769,36 @@ optimizer = torch.optim.AdamW(
 model.train()
 
 for input_ids, targets in train_loader:
+
     input_ids = input_ids.cuda()
     targets = targets.cuda()
 
-    optimizer.zero_grad(set_to_none=True)
-
-    logits, loss = model(
-        input_ids,
-        targets,
+    optimizer.zero_grad(
+        set_to_none=True
     )
+
+    with torch.autocast(
+        device_type="cuda",
+        dtype=torch.float16,
+    ):
+        logits, loss = model(
+            input_ids,
+            targets,
+        )
 
     loss.backward()
     optimizer.step()
 ```
 
+For production mixed-precision training, a gradient scaler can also be used where appropriate.
+
 ---
 
-# 10. Training checkpoints
+# 12. Trainer and training checkpoints
 
-ESA v2.1 includes `Trainer` for checkpoint management and exact resume.
+ESA v2.1.1 includes `Trainer` for checkpoint management and exact training resume.
+
+`Trainer` is a checkpoint manager. It does not replace your normal PyTorch training loop.
 
 ```python
 from esa import Trainer
@@ -488,6 +806,8 @@ from esa import Trainer
 trainer = Trainer(
     model,
     optimizer=optimizer,
+    scheduler=scheduler,
+    scaler=scaler,
     checkpoint_dir="checkpoints",
     save_every=1000,
     save_at=[5000, 10000, 20000],
@@ -501,13 +821,15 @@ Supported checkpoint behavior:
 
 ```text
 save_every=N       save periodically
-save_at=[...]      preserve exact requested checkpoints
-save_best=True     save best validation checkpoint
-save_last=True     save final/latest checkpoint
+save_at=[...]      save exact requested steps
+save_best=True     maintain the best validation checkpoint
+save_last=True     save the final/latest checkpoint
 keep_last_n=N      retain only the latest periodic checkpoints
 ```
 
-## Save during training
+---
+
+## Save automatically during training
 
 ```python
 saved_paths = trainer.maybe_save(
@@ -516,53 +838,91 @@ saved_paths = trainer.maybe_save(
 )
 ```
 
+---
+
 ## Save a named checkpoint
 
 ```python
-trainer.save_checkpoint(
+checkpoint = trainer.save_checkpoint(
     step=5000,
     name="wikipedia_stage_1",
     protected=True,
 )
 ```
 
-## Save the final checkpoint
+Optional extra information can be stored:
 
 ```python
-trainer.save_final()
+checkpoint = trainer.save_checkpoint(
+    step=5000,
+    name="wikipedia_stage_1",
+    protected=True,
+    extra={
+        "dataset": "Wikipedia",
+    },
+)
 ```
-
-A training checkpoint contains the model files plus:
-
-```text
-training_state.pt
-```
-
-The training state can include:
-
-- current step
-- best validation loss
-- optimizer state
-- scheduler state
-- gradient scaler state
-- Python RNG state
-- PyTorch RNG state
-- CUDA RNG state
 
 ---
 
-# 11. Resume training
+## Save the final checkpoint
+
+```python
+trainer.save_final(
+    step=final_step,
+    val_loss=final_val_loss,
+)
+```
+
+---
+
+## Load a checkpoint
+
+```python
+payload = trainer.load_checkpoint(
+    "checkpoints/step_010000",
+)
+```
+
+By default, checkpoint loading can restore:
+
+* model state
+* optimizer state
+* scheduler state
+* gradient scaler state
+* trainer step
+* best validation loss
+* Python RNG state
+* PyTorch RNG state
+* CUDA RNG state
+
+RNG restoration can be controlled with:
+
+```python
+trainer.load_checkpoint(
+    "checkpoints/step_010000",
+    restore_rng=True,
+)
+```
+
+---
+
+# 13. Resume training
 
 Resume the latest checkpoint:
 
 ```python
-trainer.resume_from("latest")
+trainer.resume_from(
+    "latest"
+)
 ```
 
 Resume the best checkpoint:
 
 ```python
-trainer.resume_from("best")
+trainer.resume_from(
+    "best"
+)
 ```
 
 Resume a specific checkpoint:
@@ -573,40 +933,46 @@ trainer.resume_from(
 )
 ```
 
-Or load a checkpoint directly:
-
-```python
-trainer.load_checkpoint(
-    "checkpoints/step_010000"
-)
-```
-
-This restores the model and, when available, optimizer, scheduler, scaler, and RNG state.
+`resume_from()` restores the checkpoint into the existing `Trainer` and returns the trainer instance.
 
 ---
 
-# 12. Model information
+# 14. Model information
 
 ```python
 info = model.model_info()
+
 print(info)
 ```
 
-The returned dictionary includes the model configuration together with information such as:
+The returned dictionary includes model configuration and runtime information such as:
 
 ```text
+vocab_size
+block
+n_layer
+head
+embd
+dropout
+backend
+precision
+compass
 parameters
 device
-generation_engine = ESA-Lightning
+generation_engine
+```
+
+The generation engine is reported as:
+
+```text
+ESA-Lightning
 ```
 
 ---
 
-# 13. thunderBoost
+# 15. thunderBoost
 
-`thunderBoost()` is an optional compile and warmup utility for ESA layers and PyTorch models.
-
-It performs warmup without calling `optimizer.step()`, so it does not update model weights.
+`thunderBoost()` is an optional compile and warmup utility for ESA layers and general PyTorch modules.
 
 ```python
 from esa import thunderBoost
@@ -617,7 +983,7 @@ model = thunderBoost(
 )
 ```
 
-With state information:
+To receive state/statistics information:
 
 ```python
 model, state = thunderBoost(
@@ -627,11 +993,28 @@ model, state = thunderBoost(
 )
 ```
 
-`thunderBoost()` is separate from normal ESA model training and from ESA-Lightning generation.
+The utility supports options such as:
+
+```text
+compile
+compile_mode
+backward
+amp
+dtype
+device
+steps
+return_stats
+```
+
+`thunderBoost()` is separate from:
+
+* normal model optimization
+* ESA backend selection
+* ESA-Lightning generation
 
 ---
 
-# 14. Compass
+# 16. Compass
 
 `compass()` evaluates Thunder ESA across candidate scan settings and recommends a practical value for a workload.
 
@@ -640,7 +1023,7 @@ from esa import compass
 
 result = compass(
     evaluate_fn=evaluate_fn,
-    compass_candidates=(8, 16, 32, 64),
+    c_candidates=(8, 16, 32, 64),
     reference_backend="pulse",
     precision="fp16",
     quality_tolerance=0.02,
@@ -650,6 +1033,18 @@ print(result.recommended)
 print(result.summary())
 ```
 
+The evaluation function receives arguments such as:
+
+```python
+def evaluate_fn(
+    *,
+    backend: str,
+    c: int | None,
+    precision: str,
+):
+    ...
+```
+
 `CompassResult` provides:
 
 ```text
@@ -657,12 +1052,31 @@ recommended
 best_quality
 fastest
 rows
+reference_backend
+precision
+quality_tolerance
+recommendation
 summary()
+```
+
+`compass()` uses `c_candidates` as its public candidate-list argument.
+
+The resulting recommended value is passed to `ESA` through the public `compass` argument:
+
+```python
+from esa import ESA
+
+layer = ESA(
+    embd=128,
+    head=4,
+    backend="thunder",
+    compass=result.recommended,
+)
 ```
 
 ---
 
-# 15. Public API
+# 17. Public API
 
 ```python
 from esa import (
@@ -683,40 +1097,59 @@ from esa import (
 )
 ```
 
-## Recommended high-level workflow
+---
 
-### Build
+# 18. Recommended high-level workflow
+
+## Build
 
 ```python
+from esa import ESAModel
+
 model = ESAModel(
     vocab_size=vocab_size,
-    backend="flare",
+    backend="thunder",
+    compass=16,
+    device="cuda",
 )
 ```
 
-### Train
+---
+
+## Train
 
 ```python
-logits, loss = model(input_ids, targets)
+logits, loss = model(
+    input_ids,
+    targets,
+)
 ```
 
-### Generate
+---
+
+## Generate
 
 ```python
 text = model.generate(
-    prompt=prompt,
+    prompt,
     tokenizer=tokenizer,
-    max_new_tokens=256,
+    seek=256,
 )
 ```
 
-### Save
+---
+
+## Save
 
 ```python
-model.save("my_model")
+model.save(
+    "my_model"
+)
 ```
 
-### Load
+---
+
+## Load
 
 ```python
 model = ESAModel.load(
@@ -725,49 +1158,209 @@ model = ESAModel.load(
 )
 ```
 
-### Resume exact training state
+---
+
+## Resume exact training state
 
 ```python
-trainer.resume_from("latest")
+trainer.resume_from(
+    "latest"
+)
 ```
 
 ---
 
-# 16. Architecture roles
+# 19. Architecture roles
 
-ESA v2.1 separates training and generation responsibilities clearly:
+ESA v2.1.1 separates full-sequence execution and recurrent generation clearly:
 
 ```text
-Training / full-sequence execution
-    Flare      default
-    Thunder    optimized alternative
-    Pulse      reference
+Full-sequence ESA execution
+    Thunder C16    default
+    Pulse          reference
+    Flare          alternative
 
 Text generation
+    Prefill
+        Thunder eager or compiled
+        selectable execution engine
+
     ESA-Lightning
-        prefill
         recurrent state
-        one-token decode step
+        one-token decode
         model.generate()
 ```
 
-ESA-Lightning is not exposed as `backend="lightning"`.
+ESA-Lightning is not exposed as:
+
+```python
+backend="lightning"
+```
+
+The public backend names are:
+
+```text
+thunder
+pulse
+flare
+```
+
+---
+
+# 20. Validated v2.1.1 lifecycle
+
+ESA v2.1.1 has been tested across the following lifecycle:
+
+```text
+package import
+public API
+official examples
+Thunder forward/backward
+Pulse forward/backward
+Flare forward/backward
+FP32 execution
+CUDA AMP execution
+recurrent prefill
+one-token Lightning decode
+model training
+loss reduction
+token generation
+raw-text generation
+compiled prefill
+compiled recurrent generation
+model save
+model load
+exact output roundtrip
+checkpoint save
+RNG restoration
+optimizer resume
+exact training continuation
+wheel build
+source distribution build
+external wheel installation
+external source distribution installation
+```
+
+Release validation confirmed exact save/load output equivalence and exact checkpoint continuation in the tested configuration.
+
+---
+
+
+<!-- ESA_COMPILE_MODE_GUIDE_START -->
+# Compile modes
+
+ESA keeps compilation enabled by default using PyTorch's standard `default`
+compile mode. This provides strong acceleration while prioritizing stability
+and compatibility.
+
+## Default behavior
+
+Training:
+
+```python
+config = ESAModelConfig(
+    vocab_size=50257,
+    training_compile=True,
+    training_compile_mode="default",
+)
+```
+
+Generation:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    compile=True,
+)
+```
+
+Equivalent explicit generation configuration:
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    compile=True,
+    compile_mode="default",
+)
+```
+
+## Optimum performance
+
+For optimum CUDA performance, manually enable `reduce-overhead` after
+validating the exact model, device, batch size, tensor shapes, recurrent
+state, and memory budget used by the application.
+
+### Generation
+
+```python
+text = model.generate(
+    "Once upon a time",
+    tokenizer=tokenizer,
+    seek=256,
+    compile=True,
+    compile_mode="reduce-overhead",
+)
+```
+
+### Training
+
+```python
+config = ESAModelConfig(
+    vocab_size=50257,
+    training_compile=True,
+    training_compile_mode="reduce-overhead",
+)
+```
+
+### Compiled prefill
+
+```python
+logits, states, position = model.prefill(
+    input_ids,
+    engine="thunder_compiled_16",
+    compile_mode="reduce-overhead",
+    fullgraph=False,
+    dynamic=True,
+)
+```
+
+### Compile the recurrent decode step directly
+
+```python
+model.compile_generation(
+    mode="reduce-overhead",
+    fullgraph=False,
+)
+```
+
+> **Recommendation:** use the default compile mode for general applications.
+> Manually enable `reduce-overhead` when maximum CUDA performance is required
+> and the exact workload has been tested for stability.
+<!-- ESA_COMPILE_MODE_GUIDE_END -->
 
 ---
 
 # Research status
 
-ESA v2.1 is research software.
+ESA v2.1.1 is research software.
 
 Performance depends on:
 
-- model size
-- sequence length
-- batch size
-- precision
-- GPU architecture
-- dataset
-- training configuration
+* model size
+* sequence length
+* batch size
+* precision
+* selected backend
+* Thunder compass setting
+* GPU architecture
+* PyTorch version
+* compilation mode
+* dataset
+* training configuration
 
 Benchmark results should be reported with complete hardware and configuration details.
 
@@ -794,8 +1387,11 @@ Zenodo citation:
 ```text
 Hussain, Z., & Hussain, A. (2026).
 Entangled State Attention: Efficient Long-Context Causal Modeling via Associative State Scans (2.0.0).
-Zenodo. https://doi.org/10.5281/zenodo.21218821
+Zenodo.
+https://doi.org/10.5281/zenodo.21218821
 ```
+
+The research-paper version and the Python library version are versioned independently.
 
 ---
 

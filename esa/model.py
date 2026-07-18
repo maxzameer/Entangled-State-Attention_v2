@@ -10,16 +10,49 @@ from pathlib import Path
 import time
 from typing import Any
 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import importlib.util
+import warnings
 
 from .generation import (
     GenerationResult,
     GenerationStats,
     sample_next_token,
+    parse_engine_spec,
 )
 from .layer import ESA
+
+def available_devices():
+    """
+    Return all devices supported by ESA.
+    """
+
+    return {
+        "cpu": True,
+        "cuda": torch.cuda.is_available(),
+        "mps": (
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        ),
+        "xla": importlib.util.find_spec("torch_xla") is not None,
+        "npu": importlib.util.find_spec("torch_npu") is not None,
+    }
+
+
+def print_available_devices():
+    devices = available_devices()
+
+    print("\nAvailable Devices")
+    print("-----------------------------")
+
+    for name, enabled in devices.items():
+        print(f"{'✓' if enabled else '✗'} {name}")
+
+    if devices["cuda"]:
+        print(f"\nCUDA GPU : {torch.cuda.get_device_name(0)}")
 
 
 @dataclass
@@ -31,9 +64,12 @@ class ESAModelConfig:
     embd: int = 384
     dropout: float = 0.1
     bias: bool = True
-    backend: str = "flare"
+    backend: str = "thunder"
     precision: str = "fp16"
     compass: int | None = None
+    training_compile: bool = True
+    training_compile_mode: str = "default"
+    training_compile_fullgraph: bool = False
     gate_min: float = 0.80
     gate_max: float = 0.995
     eps: float = 1e-5
@@ -45,6 +81,7 @@ class ESAModelConfig:
         cls,
         data: dict[str, Any],
     ) -> "ESAModelConfig":
+        """Construct a model configuration from serialized dictionary values."""
         allowed = cls.__dataclass_fields__.keys()
         return cls(
             **{
@@ -170,20 +207,24 @@ class _ESABlock(nn.Module):
         return x
 
     @torch.no_grad()
-    def lightning_prefill(
+    def prefill(
         self,
         x: torch.Tensor,
+        *,
+        backend: str | None = None,
+        compass: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         y, state = self.esa.prefill(
-            self.ln1(x)
+            self.ln1(x),
+            backend=backend,
+            compass=compass,
         )
-
         x = x + y
-        x = x + self.mlp(
-            self.ln2(x)
-        )
-
+        x = x + self.mlp(self.ln2(x))
         return x, state
+
+    # Backward-compatible alias.
+    lightning_prefill = prefill
 
     def lightning_step(
         self,
@@ -217,6 +258,8 @@ class ESAModel(nn.Module):
     def __init__(
         self,
         config: ESAModelConfig | None = None,
+        *,
+        device: str = "cuda",
         **kwargs: Any,
     ):
         super().__init__()
@@ -231,6 +274,65 @@ class ESAModel(nn.Module):
             )
 
         self.config = config
+
+        # ==========================================================
+        # Device selection
+        # ==========================================================
+
+        device_name = str(device).lower()
+
+        if device_name == "cuda":
+            if torch.cuda.is_available():
+                target_device = torch.device("cuda")
+            else:
+                import warnings
+
+                warnings.warn(
+                    "CUDA requested but not available. Falling back to CPU.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                target_device = torch.device("cpu")
+
+        elif device_name == "cpu":
+            target_device = torch.device("cpu")
+
+        elif device_name == "mps":
+            if (
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            ):
+                target_device = torch.device("mps")
+            else:
+                raise RuntimeError(
+                    "MPS requested but Apple MPS is not available."
+                )
+
+        elif device_name in {"tpu", "xla"}:
+            try:
+                import torch_xla.core.xla_model as xm
+            except ImportError as exc:
+                raise RuntimeError(
+                    "TPU/XLA requested but torch_xla is not installed."
+                ) from exc
+
+            target_device = xm.xla_device()
+
+        elif device_name == "npu":
+            try:
+                import torch_npu  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError(
+                    "NPU requested but torch_npu is not installed."
+                ) from exc
+
+            target_device = torch.device("npu")
+
+        else:
+            raise ValueError(
+                f"Unsupported ESA device: {device!r}. "
+                "Choose from: 'cuda', 'cpu', 'mps', 'tpu', 'xla', or 'npu'."
+            )
 
         self.wte = nn.Embedding(
             config.vocab_size,
@@ -292,6 +394,19 @@ class ESAModel(nn.Module):
 
         self._compiled_lightning_step = None
 
+        self._compiled_lightning_key = None
+        self._compiled_prefill_cache: dict[tuple[Any, ...], Any] = {}
+        self._prefill_compile_failures: set[tuple[Any, ...]] = set()
+        self._compiled_training_forward = None
+        self._compiled_training_key = None
+        self._training_compile_failed = False
+        self._compile_warnings_emitted: set[str] = set()
+        self.to(target_device)
+
+
+
+
+
     def _init_weights(
         self,
         module: nn.Module,
@@ -327,105 +442,277 @@ class ESAModel(nn.Module):
     ) -> torch.device:
         return self.wte.weight.device
 
-    def forward(
+    def _forward_eager(
         self,
         input_ids: torch.Tensor,
         targets: torch.Tensor | None = None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor | None,
-    ]:
-        B, T = input_ids.shape
-
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        _, T = input_ids.shape
         if T > self.config.block:
             raise ValueError(
                 f"Sequence length {T} exceeds block {self.config.block}."
             )
-
         pos = torch.arange(
             T,
             dtype=torch.long,
             device=input_ids.device,
         )
-
-        x = self.drop(
-            self.wte(input_ids)
-            + self.wpe(pos)[None, :, :]
-        )
-
+        x = self.drop(self.wte(input_ids) + self.wpe(pos)[None, :, :])
         for block in self.blocks:
             x = block(x)
-
         x = self.ln_f(x)
         logits = self.lm_head(x)
-
         loss = None
-
         if targets is not None:
             loss = F.cross_entropy(
-                logits.reshape(
-                    -1,
-                    logits.size(-1),
-                ),
+                logits.reshape(-1, logits.size(-1)),
                 targets.reshape(-1),
                 ignore_index=-1,
             )
-
         return logits, loss
 
-    @torch.no_grad()
-    def lightning_prefill(
+    def compile_training(
+        self,
+        *,
+        mode: str | None = None,
+        fullgraph: bool | None = None,
+    ) -> "ESAModel":
+        """Compile the full training forward path and cache it."""
+        if not hasattr(torch, "compile"):
+            return self
+        mode = mode or self.config.training_compile_mode
+        fullgraph = (
+            self.config.training_compile_fullgraph
+            if fullgraph is None
+            else bool(fullgraph)
+        )
+        key = (mode, fullgraph)
+        if self._compiled_training_key == key and self._compiled_training_forward is not None:
+            return self
+        try:
+            self._compiled_training_forward = torch.compile(
+                self._forward_eager,
+                mode=mode,
+                fullgraph=fullgraph,
+            )
+            self._compiled_training_key = key
+            self._training_compile_failed = False
+        except Exception as exc:
+            self._compiled_training_forward = None
+            self._training_compile_failed = True
+            self._warn_compile_fallback("training", exc)
+        return self
+
+    def forward(
         self,
         input_ids: torch.Tensor,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        int,
-    ]:
+        targets: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        use_compiled_training = (
+            bool(self.config.training_compile)
+            and self.device.type == "cuda"
+            and self.training
+            and targets is not None
+            and not self._training_compile_failed
+        )
+        if use_compiled_training:
+            if self._compiled_training_forward is None:
+                self.compile_training()
+            if self._compiled_training_forward is not None:
+                return self._compiled_training_forward(input_ids, targets)
+        return self._forward_eager(input_ids, targets)
+
+    @torch.no_grad()
+    def _prefill_eager(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        backend: str | None = None,
+        compass: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
         if input_ids.ndim != 2:
             raise ValueError(
                 "input_ids must be [B,T], "
                 f"got {tuple(input_ids.shape)}"
             )
-
         if input_ids.size(1) > self.config.block:
-            input_ids = input_ids[
-                :,
-                -self.config.block:
-            ]
-
+            input_ids = input_ids[:, -self.config.block:]
         T = input_ids.size(1)
-
-        pos = torch.arange(
-            T,
-            device=input_ids.device,
-        )
-
-        x = self.drop(
-            self.wte(input_ids)
-            + self.wpe(pos)[None, :, :]
-        )
-
+        if T <= 0:
+            raise ValueError("Prefill requires at least one token.")
+        pos = torch.arange(T, device=input_ids.device)
+        x = self.drop(self.wte(input_ids) + self.wpe(pos)[None, :, :])
         states = []
-
         for block in self.blocks:
-            x, state = block.lightning_prefill(
-                x
+            x, state = block.prefill(
+                x,
+                backend=backend,
+                compass=compass,
             )
             states.append(state)
+        states_out = torch.stack(states, dim=0).contiguous()
+        logits = self.lm_head(self.ln_f(x[:, -1]))
+        return logits, states_out, T
 
-        states = torch.stack(
-            states,
-            dim=0,
-        ).contiguous()
+    def _warn_compile_fallback(self, component: str, exc: Exception) -> None:
+        import warnings
 
-        logits = self.lm_head(
-            self.ln_f(
-                x[:, -1]
-            )
+        if component in self._compile_warnings_emitted:
+            return
+        self._compile_warnings_emitted.add(component)
+        warnings.warn(
+            f"ESA {component} compilation failed; falling back to eager execution: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
-        return logits, states, T
+    def _cudagraph_mark_step_begin(self) -> None:
+        """Mark a new CUDA-graph iteration when the PyTorch API is available.
+
+        ``torch.compile(mode="reduce-overhead")`` may use CUDA graphs. ESA
+        Lightning carries recurrent state from one compiled invocation into the
+        next, so explicitly marking decode-step boundaries prevents PyTorch from
+        treating successive autoregressive steps as one graph iteration.
+        """
+        if self.device.type != "cuda":
+            return
+
+        compiler = getattr(torch, "compiler", None)
+        marker = getattr(compiler, "cudagraph_mark_step_begin", None)
+
+        if marker is not None:
+            marker()
+
+    @torch.no_grad()
+    def prefill(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        engine: str = "thunder_compiled_16",
+        compile_mode: str = "default",
+        fullgraph: bool = False,
+        dynamic: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Run prompt prefill with a selectable ESA execution engine.
+
+        Compiled prefill:
+            - dynamic prompt lengths
+            - CUDA Graphs disabled
+
+        Lightning decode is compiled separately using the selected compile mode. The default prioritizes stability, while reduce-overhead remains an explicit optimum-speed option.
+        """
+
+        spec = parse_engine_spec(
+            engine
+        )
+
+        backend = spec.backend
+        compass = spec.compass
+
+        def eager(
+            ids: torch.Tensor,
+        ):
+            return self._prefill_eager(
+                ids,
+                backend=backend,
+                compass=compass,
+            )
+
+        # ========================================================
+        # COMPILED PREFILL
+        # ========================================================
+
+        if (
+            spec.compiled
+            and self.device.type == "cuda"
+            and hasattr(torch, "compile")
+        ):
+
+            key = (
+                spec.backend,
+                spec.compass,
+                bool(fullgraph),
+                bool(dynamic),
+                False,  # prefill CUDA Graphs disabled
+            )
+
+            compiled_fn = (
+                self._compiled_prefill_cache.get(
+                    key
+                )
+            )
+
+            if (
+                compiled_fn is None
+                and key not in self._prefill_compile_failures
+            ):
+
+                try:
+
+                    compiled_fn = torch.compile(
+                        eager,
+                        fullgraph=fullgraph,
+                        dynamic=True,
+                        options={
+                            "triton.cudagraphs": False,
+                        },
+                    )
+
+                    self._compiled_prefill_cache[
+                        key
+                    ] = compiled_fn
+
+                except Exception as exc:
+
+                    self._prefill_compile_failures.add(
+                        key
+                    )
+
+                    self._warn_compile_fallback(
+                        "prefill",
+                        exc,
+                    )
+
+            if compiled_fn is not None:
+
+                try:
+
+                    return compiled_fn(
+                        input_ids
+                    )
+
+                except Exception as exc:
+
+                    self._prefill_compile_failures.add(
+                        key
+                    )
+
+                    self._compiled_prefill_cache.pop(
+                        key,
+                        None,
+                    )
+
+                    self._warn_compile_fallback(
+                        "prefill",
+                        exc,
+                    )
+
+        # ========================================================
+        # EAGER PREFILL
+        # ========================================================
+
+        return eager(
+            input_ids
+        )
+    
+    @torch.no_grad()
+    def lightning_prefill(
+        self,
+        input_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """Backward-compatible v2.1 prefill using the model's configured backend."""
+        return self._prefill_eager(input_ids)
 
     def lightning_step(
         self,
@@ -436,6 +723,7 @@ class ESAModel(nn.Module):
         torch.Tensor,
         torch.Tensor,
     ]:
+        """Run one recurrent ESA-Lightning decoding step."""
         x = (
             self.wte(token)
             + self.wpe(pos_tensor)[None, :]
@@ -468,175 +756,219 @@ class ESAModel(nn.Module):
 
         return logits, states_out
 
+    
+
     def compile_generation(
         self,
         *,
-        mode: str = "reduce-overhead",
+        mode: str = "default",
         fullgraph: bool = False,
     ) -> "ESAModel":
-        self._compiled_lightning_step = torch.compile(
-            self.lightning_step,
-            mode=mode,
-            fullgraph=fullgraph,
+        """
+        Compile the fixed-shape ESA-Lightning decode step.
+
+        Lightning decode always processes one token at a time, so its input shape
+        is stable. Use the selected compile mode. The public default prioritizes stability; reduce-overhead remains an explicit optimum-speed option. used by
+        ESA v2.1.0.
+
+        Prefill and decode intentionally use different compilation policies:
+
+            Prefill:
+                dynamic=True
+                CUDA Graphs disabled
+
+            Decode:
+                dynamic=False
+                mode="reduce-overhead"
+                CUDA Graph acceleration available
+        """
+
+        if (
+            not hasattr(
+                torch,
+                "compile",
+            )
+            or self.device.type != "cuda"
+        ):
+            return self
+
+
+        key = (
+            mode,
+            bool(
+                fullgraph
+            ),
         )
 
+
+        # ==============================================================================================
+        # REUSE EXISTING COMPILED LIGHTNING STEP
+        # ==============================================================================================
+
+        if (
+            self._compiled_lightning_step
+            is not None
+            and self._compiled_lightning_key
+            == key
+        ):
+            return self
+
+
+        # ==============================================================================================
+        # COMPILE LIGHTNING
+        # ==============================================================================================
+
+        try:
+
+            self._compiled_lightning_step = (
+                torch.compile(
+                    self.lightning_step,
+
+                    mode=mode,
+
+                    fullgraph=fullgraph,
+
+                    # Lightning is fixed-shape:
+                    # one token + fixed ESA state.
+                    dynamic=False,
+                )
+            )
+
+
+            self._compiled_lightning_key = (
+                key
+            )
+
+
+        except Exception as exc:
+
+            self._compiled_lightning_step = (
+                None
+            )
+
+
+            self._compiled_lightning_key = (
+                None
+            )
+
+
+            self._warn_compile_fallback(
+                "runtime",
+                exc,
+            )
+
+
         return self
+
+
+
 
     @torch.inference_mode()
     def generate(
         self,
-        input_ids: torch.Tensor | None = None,
+        prompt: str | torch.Tensor | None = None,
         *,
-        prompt: str | None = None,
         tokenizer: Any | None = None,
-        max_new_tokens: int = 128,
+        input_ids: torch.Tensor | None = None,
+        seek: int = 128,
+        prefill: str = "thunder_16",
+        
+        runtime: str = "lightning",
         temperature: float = 1.0,
         top_k: int | None = None,
         top_p: float | None = None,
         eos_token_id: int | None = None,
         seed: int | None = None,
         compile: bool = True,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "default",
         progress_interval: int | None = None,
         stats: bool = False,
+        max_new_tokens: int | None = None,
     ) -> torch.Tensor | str | GenerationResult:
-        if max_new_tokens <= 0:
-            raise ValueError(
-                "max_new_tokens must be positive."
-            )
+        """Generate text with optimized ESA defaults.
+
+        Normal users can pass raw text positionally. ``input_ids`` and
+        ``max_new_tokens`` remain available for backward compatibility.
+        """
+        if max_new_tokens is not None:
+            if seek != 128 and int(seek) != int(max_new_tokens):
+                raise ValueError(
+                    "Pass either seek or max_new_tokens, not conflicting values for both."
+                )
+            seek = int(max_new_tokens)
+        seek = int(seek)
+        if seek <= 0:
+            raise ValueError("seek must be positive.")
+
+        # Backward compatibility: model.generate(tensor, ...).
+        if torch.is_tensor(prompt):
+            if input_ids is not None:
+                raise ValueError("Provide token IDs either positionally or via input_ids, not both.")
+            input_ids = prompt
+            prompt = None
 
         if input_ids is None:
-            if (
-                prompt is None
-                or tokenizer is None
-            ):
+            if prompt is None or tokenizer is None:
                 raise ValueError(
-                    "Provide input_ids, or both prompt and tokenizer."
+                    "Provide a text prompt with tokenizer, or use the advanced input_ids API."
                 )
-
-            if hasattr(
-                tokenizer,
-                "encode_ordinary",
-            ):
-                ids = tokenizer.encode_ordinary(
-                    prompt
-                )
-            elif hasattr(
-                tokenizer,
-                "encode",
-            ):
-                ids = tokenizer.encode(
-                    prompt
-                )
+            if hasattr(tokenizer, "encode_ordinary"):
+                ids = tokenizer.encode_ordinary(prompt)
+            elif hasattr(tokenizer, "encode"):
+                ids = tokenizer.encode(prompt)
             else:
                 raise TypeError(
                     "tokenizer must expose encode_ordinary() or encode()."
                 )
-
             input_ids = torch.tensor(
                 ids,
                 dtype=torch.long,
                 device=self.device,
             ).unsqueeze(0)
         else:
-            input_ids = input_ids.to(
-                self.device
+            input_ids = input_ids.to(self.device)
+
+        runtime_spec = parse_engine_spec(runtime)
+        if runtime_spec.backend != "lightning":
+            raise ValueError(
+                "Autoregressive decode currently supports runtime='lightning' only. "
+                "Thunder/Flare/Pulse are selectable prefill engines."
             )
+        compile_runtime = bool(compile or runtime_spec.compiled)
 
         was_training = self.training
         self.eval()
+        try:
+            if seed is not None:
+                torch.manual_seed(int(seed))
+                if self.device.type == "cuda":
+                    torch.cuda.manual_seed_all(int(seed))
 
-        if seed is not None:
-            torch.manual_seed(
-                int(seed)
+            def sync() -> None:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+
+            prompt_tokens = int(input_ids.size(1))
+            sync()
+            total_start = time.perf_counter()
+            prefill_start = total_start
+            logits, states, prefill_len = self.prefill(
+                input_ids,
+                engine=prefill,
+                compile_mode=compile_mode,
+                fullgraph=False,
+                dynamic=True,
             )
 
-            if self.device.type == "cuda":
-                torch.cuda.manual_seed_all(
-                    int(seed)
-                )
+            # A compiled prefill may return CUDA-graph-managed output storage.
+            # Lightning decode carries ESA state across many later invocations,
+            # so move the recurrent state into stable, independently owned
+            # storage before the first decode step.
+            if states.is_cuda:
+                states = states.clone()
 
-        def sync() -> None:
-            if self.device.type == "cuda":
-                torch.cuda.synchronize(
-                    self.device
-                )
-
-        prompt_tokens = int(
-            input_ids.size(1)
-        )
-
-        sync()
-        total_start = time.perf_counter()
-        prefill_start = total_start
-
-        logits, states, prefill_len = (
-            self.lightning_prefill(
-                input_ids
-            )
-        )
-
-        sync()
-
-        prefill_seconds = (
-            time.perf_counter()
-            - prefill_start
-        )
-
-        next_token = sample_next_token(
-            logits,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-        )
-
-        generated = [
-            next_token
-        ]
-
-        step_fn = self.lightning_step
-
-        if compile:
-            if (
-                self._compiled_lightning_step
-                is None
-            ):
-                self.compile_generation(
-                    mode=compile_mode
-                )
-
-            step_fn = (
-                self._compiled_lightning_step
-            )
-
-        decode_target = (
-            max_new_tokens - 1
-        )
-
-        sync()
-        decode_start = time.perf_counter()
-
-        for step in range(
-            decode_target
-        ):
-            position = (
-                prefill_len + step
-            ) % self.config.block
-
-            pos_tensor = torch.tensor(
-                position,
-                device=self.device,
-                dtype=torch.long,
-            )
-
-            logits, states_out = step_fn(
-                next_token.squeeze(1),
-                states,
-                pos_tensor,
-            )
-
-            # Preserve the tested ESA-Lightning compiled-state boundary.
-            states = states_out.clone()
+            sync()
+            prefill_seconds = time.perf_counter() - prefill_start
 
             next_token = sample_next_token(
                 logits,
@@ -644,147 +976,164 @@ class ESAModel(nn.Module):
                 top_k=top_k,
                 top_p=top_p,
             )
+            generated = [next_token]
 
-            generated.append(
-                next_token
-            )
+            step_fn = self.lightning_step
+            using_compiled_runtime = False
 
-            if (
-                eos_token_id is not None
-                and bool(
-                    (
-                        next_token
-                        == int(eos_token_id)
-                    ).all()
-                )
-            ):
-                break
-
-            if (
-                progress_interval
-                and (step + 1)
-                % int(progress_interval)
-                == 0
-            ):
-                sync()
-
-                elapsed = (
-                    time.perf_counter()
-                    - decode_start
+            if compile_runtime and self.device.type == "cuda":
+                key = (
+                    compile_mode,
+                    False,
+                   
                 )
 
-                done = step + 1
-
-                print(
-                    f"ESA-Lightning "
-                    f"{done:,}/{decode_target:,} | "
-                    f"{done/max(elapsed, 1e-9):,.2f} tok/s"
-                )
-
-        sync()
-
-        decode_seconds = (
-            time.perf_counter()
-            - decode_start
-        )
-
-        total_seconds = (
-            time.perf_counter()
-            - total_start
-        )
-
-        generated_ids = torch.cat(
-            generated,
-            dim=1,
-        )
-
-        sequences = torch.cat(
-            [
-                input_ids,
-                generated_ids,
-            ],
-            dim=1,
-        )
-
-        state_bytes = int(
-            states.numel()
-            * states.element_size()
-        )
-
-        generation_stats = GenerationStats(
-            prompt_tokens=prompt_tokens,
-            prefill_tokens=int(
-                prefill_len
-            ),
-            generated_tokens=int(
-                generated_ids.size(1)
-            ),
-            decode_steps=max(
-                0,
-                int(
-                    generated_ids.size(1)
-                ) - 1,
-            ),
-            prefill_seconds=prefill_seconds,
-            decode_seconds=decode_seconds,
-            decode_tok_s=max(
-                0,
-                int(
-                    generated_ids.size(1)
-                ) - 1,
-            )
-            / max(
-                decode_seconds,
-                1e-9,
-            ),
-            total_seconds=total_seconds,
-            state_bytes=state_bytes,
-            state_mb=(
-                state_bytes
-                / 1024**2
-            ),
-        )
-
-        result = GenerationResult(
-            sequences=sequences,
-            generated_ids=generated_ids,
-            stats=generation_stats,
-        )
-
-        if tokenizer is not None:
-            if sequences.size(0) == 1:
-                result.text = tokenizer.decode(
-                    sequences[0]
-                    .detach()
-                    .cpu()
-                    .tolist()
-                )
-            else:
-                result.text = [
-                    tokenizer.decode(
-                        row
-                        .detach()
-                        .cpu()
-                        .tolist()
+                if (
+                    self._compiled_lightning_step is None
+                    or self._compiled_lightning_key != key
+                ):
+                    self.compile_generation(
+                        mode=compile_mode,
+                        fullgraph=False,
                     )
-                    for row in sequences
-                ]
 
-        self.train(
-            was_training
+                if self._compiled_lightning_step is not None:
+                    step_fn = self._compiled_lightning_step
+                    using_compiled_runtime = True
+
+            decode_target = seek - 1
+            sync()
+            decode_start = time.perf_counter()
+            for step in range(decode_target):
+                position = (prefill_len + step) % self.config.block
+                pos_tensor = torch.tensor(
+                    position,
+                    device=self.device,
+                    dtype=torch.long,
+                )
+                try:
+                    logits, states_out = step_fn(
+                        next_token.squeeze(1),
+                        states,
+                        pos_tensor,
+                    )
+                except Exception as exc:
+                    if not using_compiled_runtime:
+                        raise
+
+                    # ``torch.compile`` is lazy: graph lowering/capture errors
+                    # can appear on the first real invocation rather than when
+                    # ``torch.compile(...)`` returns. Fall back once to eager
+                    # Lightning instead of crashing generation.
+                    self._compiled_lightning_step = None
+                    self._compiled_lightning_key = None
+                    self._warn_compile_fallback(
+                        "runtime-execution",
+                        exc,
+                    )
+                    step_fn = self.lightning_step
+                    using_compiled_runtime = False
+
+                    logits, states_out = step_fn(
+                        next_token.squeeze(1),
+                        states,
+                        pos_tensor,
+                    )
+
+                # Keep recurrent state in independently owned storage. This is
+                # cheap for ESA's compact state and also protects against future
+                # compiler backends that may reuse output buffers.
+                states = (
+                    states_out.clone()
+                    if states_out.is_cuda
+                    else states_out
+                )
+                next_token = sample_next_token(
+                    logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                )
+                generated.append(next_token)
+
+                if (
+                    eos_token_id is not None
+                    and bool((next_token == int(eos_token_id)).all())
+                ):
+                    break
+
+                if progress_interval and (step + 1) % int(progress_interval) == 0:
+                    sync()
+                    elapsed = time.perf_counter() - decode_start
+                    done = step + 1
+                    print(
+                        f"ESA-Lightning {done:,}/{decode_target:,} | "
+                        f"{done/max(elapsed, 1e-9):,.2f} tok/s"
+                    )
+
+            sync()
+            decode_seconds = time.perf_counter() - decode_start
+            total_seconds = time.perf_counter() - total_start
+            generated_ids = torch.cat(generated, dim=1)
+            sequences = torch.cat([input_ids, generated_ids], dim=1)
+            state_bytes = int(states.numel() * states.element_size())
+            generation_stats = GenerationStats(
+                prompt_tokens=prompt_tokens,
+                prefill_tokens=int(prefill_len),
+                generated_tokens=int(generated_ids.size(1)),
+                decode_steps=max(0, int(generated_ids.size(1)) - 1),
+                prefill_seconds=prefill_seconds,
+                decode_seconds=decode_seconds,
+                decode_tok_s=max(0, int(generated_ids.size(1)) - 1)
+                / max(decode_seconds, 1e-9),
+                total_seconds=total_seconds,
+                state_bytes=state_bytes,
+                state_mb=state_bytes / 1024**2,
+            )
+            result = GenerationResult(
+                sequences=sequences,
+                generated_ids=generated_ids,
+                stats=generation_stats,
+            )
+            if tokenizer is not None:
+                if sequences.size(0) == 1:
+                    result.text = tokenizer.decode(
+                        sequences[0].detach().cpu().tolist()
+                    )
+                else:
+                    result.text = [
+                        tokenizer.decode(row.detach().cpu().tolist())
+                        for row in sequences
+                    ]
+            if stats:
+                return result
+            if result.text is not None:
+                return result.text
+            return sequences
+        finally:
+            self.train(was_training)
+
+
+
+    @torch.inference_mode()
+    def generate_ids(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        seek: int = 128,
+        **kwargs: Any,
+    ) -> torch.Tensor | GenerationResult:
+        """Advanced token-level generation API."""
+        return self.generate(
+            input_ids=input_ids,
+            seek=seek,
+            **kwargs,
         )
-
-        if stats:
-            return result
-
-        if result.text is not None:
-            return result.text
-
-        return sequences
 
     def model_info(
         self,
     ) -> dict[str, Any]:
+        """Return architecture, parameter, device, and runtime information."""
         return {
             **asdict(
                 self.config
@@ -808,6 +1157,7 @@ class ESAModel(nn.Module):
         *,
         metadata: dict[str, Any] | None = None,
     ) -> Path:
+        """Save the configuration, weights, and optional metadata to a model directory."""
         path = Path(path)
         path.mkdir(
             parents=True,
@@ -872,6 +1222,7 @@ class ESAModel(nn.Module):
         device: str | torch.device = "cpu",
         strict: bool = True,
     ) -> "ESAModel":
+        """Load an ESA model directory and restore its configuration and weights."""
         path = Path(path)
 
         config = ESAModelConfig.from_dict(
